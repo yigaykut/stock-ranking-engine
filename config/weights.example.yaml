@@ -1,0 +1,325 @@
+# =============================================================================
+#  PARAMETER TEMPLATE
+# =============================================================================
+#  This file shows the STRUCTURE of the scoring configuration. The actual
+#  weights used in production are tuned and kept private, so every weight here
+#  is set to a neutral placeholder.
+#
+#  To use this: copy to config/weights.yaml and set your own weights. The
+#  engine normalizes the total to 100, so only the ratios between weights
+#  matter, not their absolute size.
+#
+#    cp config/weights.example.yaml config/weights.yaml
+#
+#  Field reference:
+#    weight     relative importance (any positive number)
+#    direction  higher_better | lower_better
+#    norm       rank  -> percentile within the scan (robust, scale-free)
+#               band  -> absolute thresholds from the `bands` list
+#               raw   -> the factor already emits 0-100
+#    category   groups parameters for the dashboard and cluster budgets
+# =============================================================================
+
+meta:
+  version: 3
+  base_currency: USD
+  auto_disable_coverage_below: 0.15
+  min_coverage_for_confidence: 0.6
+  min_coverage_to_include: 0.55
+  coverage_shrink_power: 1.0
+  sector_neutralize: true
+  penalty_unit: sigma
+  penalty_total_cap_sigma: 2.2
+
+# =============================================================================
+#  FACTORS
+#  Every weight below is a placeholder. Set your own.
+# =============================================================================
+factors:
+
+  - id: eps_revision_momentum
+    name_tr: "Analist kar tahmini revizyonu (yukari/asagi)"
+    category: analyst
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:eps_trend + eps_revisions"
+
+  - id: trend_structure
+    name_tr: "Teknik trend yapisi (Minervini trend sablonu)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: raw
+    source: "computed"
+
+  - id: valuation_composite
+    name_tr: "Degerleme (ucuzluk) bilesigi — F/K, PD/DD, FD/FAVOK, P/S, FCF"
+    category: valuation
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: price_momentum_12_1
+    name_tr: "Fiyat momentumu (12 ay, son ay haric)"
+    category: momentum
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:history"
+
+  - id: quality_profitability
+    name_tr: "Kalite / karlilik (ROE, ROA, brut ve faaliyet marji)"
+    category: quality
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: technical_oscillators
+    name_tr: "Teknik ozet: 30 sinyalli oy sayimi (MA + osilator + trend)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: raw
+    source: "computed"
+
+  - id: financial_health
+    name_tr: "Finansal saglik (Piotroski F-Score, borc, nakit akisi)"
+    category: quality
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: raw
+    source: "yahoo:financials"
+
+  - id: breakout_setup
+    name_tr: "Kirilim kurulumu / volatilite sikismasi (potansiyel enerji)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "computed"
+
+  - id: growth_quality
+    name_tr: "Buyume ve buyume ivmesi (ciro / EPS / ileri tahmin)"
+    category: growth
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info + growth_estimates"
+
+  - id: analyst_upside
+    name_tr: "Hedef fiyat potansiyeli (kalan yukari alan)"
+    category: potential
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:analyst_price_targets"
+
+  - id: relative_strength
+    name_tr: "Endekse gore goreli guc (RS Rating)"
+    category: momentum
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:history vs SPY"
+
+  - id: momentum_persistence
+    name_tr: "Trend duzgunlugu — teknik analize uygunluk (R², sicrama, zirve sikligi)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "computed"
+
+  - id: chart_position
+    name_tr: "Grafik konumu ve kalan yukari alan (52 haftalik aralik)"
+    category: potential
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "computed"
+
+  - id: volume_accumulation
+    name_tr: "Hacim onayi ve kurumsal toplama (OBV, hacim trendi)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "computed"
+
+  - id: revenue_scaling
+    name_tr: "Ciro buyumesi ve ivmesi (kar etmeyen sirketler icin)"
+    category: emergence
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info + income statement"
+
+  - id: size_opportunity
+    name_tr: "Olcek firsati — katlanma alani (piyasa degeri)"
+    category: emergence
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: stage2_breakout
+    name_tr: "Asama 2 kirilimi — uzun bazdan YENI cikis (Weinstein)"
+    category: technical
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "computed"
+
+  - id: rule_of_40
+    name_tr: "40 kurali — buyume% + marj% (buyume sirketi kalite baraji)"
+    category: emergence
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: undiscovered
+    name_tr: "Henuz kesfedilmemis — dusuk analist takibi, kurumsala alan"
+    category: emergence
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: cash_runway
+    name_tr: "Nakit omru — kar etmeyen sirket ne kadar dayanir"
+    category: quality
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: model_score
+    name_tr: "Ogrenilen model tahmini (geri beslemeli)"
+    category: model
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "training:champion"
+
+  - id: earnings_surprise
+    name_tr: "Bilanco surprizi ve PEAD (surpriz sonrasi surukleme)"
+    category: analyst
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:earnings_history"
+
+  - id: analyst_consensus
+    name_tr: "Analist tavsiye seviyesi (Al / Guclu Al) — Investing.com muadili"
+    category: analyst
+    weight: 1.0                     # placeholder
+    direction: lower_better
+    norm: rank
+    source: "yahoo:recommendationMean + numberOfAnalystOpinions"
+    bands:
+      - {max: 1.5, score: 100, label_tr: "Guclu Al"}
+      - {max: 2.0, score: 82, label_tr: "Al"}
+      - {max: 2.5, score: 62, label_tr: "Al (zayif)"}
+      - {max: 3.0, score: 38, label_tr: "Tut"}
+      - {max: 3.5, score: 18, label_tr: "Tut / Sat"}
+      - {max: 5.1, score: 0, label_tr: "Sat"}
+
+  - id: risk_drawdown
+    name_tr: "Risk: volatilite, beta, maksimum dusus"
+    category: risk
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:history + info"
+
+  - id: liquidity
+    name_tr: "Likidite (gunluk islem hacmi, piyasa degeri)"
+    category: risk
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: reddit_wsb_attention
+    name_tr: "Reddit r/wallstreetbets ilgisi ve ivmesi"
+    category: sentiment
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: raw
+    source: "apewisdom + tradestie"
+
+  - id: short_squeeze
+    name_tr: "Aciga satis baskisi / squeeze potansiyeli"
+    category: sentiment
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: rank
+    source: "yahoo:info"
+
+  - id: nominal_price_fit
+    name_tr: "Nominal hisse fiyati uygunlugu (kullanici tercihi)"
+    category: preference
+    weight: 1.0                     # placeholder
+    direction: higher_better
+    norm: band
+    source: "yahoo:info"
+    bands:
+      - {max: 1.0, score: 10, label_tr: "Penny (<1$) — cok riskli"}
+      - {max: 5.0, score: 55, label_tr: "Cok dusuk (1-5$)"}
+      - {max: 50.0, score: 100, label_tr: "Ideal (5-50$)"}
+      - {max: 150.0, score: 85, label_tr: "Orta (50-150$)"}
+      - {max: 400.0, score: 65, label_tr: "Yuksek (150-400$)"}
+      - {max: 1e12, score: 45, label_tr: "Cok yuksek (>400$)"}
+
+# =============================================================================
+#  PENALTIES  (in units of standard deviation, so they stay proportional)
+# =============================================================================
+penalties:
+  - id: negative_fcf_high_debt
+    name_tr: "Negatif serbest nakit akisi + yuksek borc"
+    sigma: -0.25                    # placeholder
+  - id: hype_reversal_risk
+    name_tr: "Asiri ilgi + asiri alim (RSI>75 ve WSB ilk 10)"
+    sigma: -0.25                    # placeholder
+  - id: parabolic_extension
+    name_tr: "Parabolik asiri uzama (MA50 uzerinde >%40)"
+    sigma: -0.25                    # placeholder
+  - id: distribution_pattern
+    name_tr: "Dagitim: fiyat yukselirken OBV dusuyor"
+    sigma: -0.25                    # placeholder
+  - id: earnings_imminent
+    name_tr: "7 gun icinde bilanco"
+    sigma: -0.25                    # placeholder
+
+# =============================================================================
+#  CORRELATION CLUSTERS
+#  Parameters that measure the same thing share a weight budget, so their
+#  effects don't stack into a hidden single bet.
+# =============================================================================
+clusters:
+  - id: trend
+    name_tr: "Trend / momentum kumesi"
+    budget: 10.0                    # placeholder
+    members:
+      - trend_structure
+      - stage2_breakout
+      - momentum_persistence
+      - chart_position
+      - relative_strength
+      - price_momentum_12_1
+
+# =============================================================================
+#  FILTERS  (deliberately loose - meant to drop junk, not to screen stocks)
+# =============================================================================
+filters:
+  min_price: 1.0
+  min_market_cap: 150000000
+  max_market_cap: 20000000000
+  min_avg_dollar_volume: 1000000
+  max_price: null
+  require_wsb: false
+  require_analyst_buy: false

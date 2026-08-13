@@ -1,0 +1,44 @@
+# ============================================================
+#  What stays out of this repo
+# ============================================================
+
+# Your tuned weights. The template is committed instead:
+#   config/weights.example.yaml
+config/weights.yaml
+
+# Positions, cache, history, learned models
+data/
+logs/
+
+# Generated dashboards, both plain and encrypted
+output/
+publish/
+
+# Password file (if you use scripts/parola_uret.py)
+parola.txt
+
+# Python
+__pycache__/
+*.pyc
+*.pyo
+.venv/
+venv/
+.pytest_cache/
+
+# Node (jsdom for UI tests)
+node_modules/
+package-lock.json
+package.json
+
+# Editors / OS
+.vscode/
+.idea/
+*.swp
+Thumbs.db
+desktop.ini
+
+# Turkish docs that contain the tuned weights. They stay local.
+#   PARAMETRELER.md  full weight table per parameter
+#   EKSIKLIKLER.md   audit report quoting cluster budgets and penalties
+docs/PARAMETRELER.md
+docs/EKSIKLIKLER.md
