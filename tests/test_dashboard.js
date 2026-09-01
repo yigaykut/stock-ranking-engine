@@ -150,11 +150,83 @@ if (form && input) {
 }
 
 function finish() {
-  // 8. Tema ve icerik saglik kontrolleri
+  // 8. Yeni bolumler: karne, parametre IC'si, sistem sagligi
+  //    Bunlarin ortak ozelligi "veri yoksa gizli kal" olmasi. Bu yuzden iki
+  //    sey ayri ayri kontrol edilir: veri VARSA gorunur olmali, ve gorunuyorsa
+  //    icerigi dolu olmali. Yalnizca varligi kontrol etmek yetmezdi -- bos bir
+  //    baslik da testi gecerdi.
+  // DATA, klasik bir script icinde `const` ile tanimli: script kapsamina
+  // baglanir, window uzerinde GORUNMEZ. window.DATA okunursa daima undefined
+  // gelir ve "veri yok" dallari sessizce test edilir -- yani testler
+  // hicbir sey dogrulamadan gecer. eval ile script kapsamindan okunur.
+  const D2 = window.eval('typeof DATA !== "undefined" ? DATA : null') || {};
+
+  const paperData = D2.paper && ((D2.paper.live && D2.paper.live.ok) ||
+                                 (D2.paper.panel && D2.paper.panel.ok));
+  const secPaper = doc.getElementById('secPaper');
+  if (D2.paper) {
+    ok('karne bolumu goruntulendi', secPaper && !secPaper.hidden);
+    const body = doc.getElementById('paperBody');
+    ok('karne icerigi dolu', body && body.textContent.trim().length > 40);
+    if (paperData) {
+      ok('karne endeks farkini gosteriyor',
+         body && /endeks farki/i.test(body.textContent));
+      ok('karne anlamlilik satiri var',
+         body && /ayirt ed/i.test(body.textContent));
+    }
+    ok('karne yanlilik uyarisini gizlemiyor',
+       !D2.paper.panel || !D2.paper.panel.ok ||
+       /YANLILIGI/.test(doc.getElementById('paperBody').textContent));
+  } else {
+    ok('karne verisi yokken bolum gizli', !secPaper || secPaper.hidden);
+  }
+
+  const secIC = doc.getElementById('secIC');
+  if (D2.factorIC && D2.factorIC.factors && D2.factorIC.factors.length) {
+    ok('IC bolumu goruntulendi', secIC && !secIC.hidden);
+    const rows = doc.querySelectorAll('#icBody tbody tr');
+    ok('IC tablosu doldu', rows.length === D2.factorIC.factors.length,
+       rows.length + ' satir');
+    ok('IC tablosunda undefined/NaN yok',
+       !/undefined|NaN/.test(doc.getElementById('icBody').innerHTML));
+    ok('IC tablosu agirlik sutunu tasiyor',
+       /Agirlik/.test(doc.getElementById('icBody').textContent));
+    ok('otomatik agirlik degisimi olmadigi yaziyor',
+       /otomatik degistirilmez/.test(doc.getElementById('icBody').textContent));
+  } else {
+    ok('IC verisi yokken bolum gizli', !secIC || secIC.hidden);
+  }
+
+  const secHealth = doc.getElementById('secHealth');
+  ok('saglik bolumu goruntulendi', secHealth && !secHealth.hidden);
+  const hb = doc.getElementById('healthBody');
+  ok('saglik tablosu dolu', hb && hb.querySelectorAll('tr').length >= 4,
+     hb ? hb.querySelectorAll('tr').length + ' satir' : 'yok');
+  ok('saglik panelinde undefined yok', hb && !/undefined/.test(hb.innerHTML));
+
+  // Rejim seridi: veri varsa durum seridinde gorunmeli
+  if (D2.regime && D2.regime.label && D2.regime.label !== 'BILINMIYOR') {
+    ok('piyasa rejimi seridi var',
+       /PIYASA REJIMI/.test(doc.getElementById('statusBar').textContent));
+  }
+
+  // 9. Tema ve icerik saglik kontrolleri
   ok('charset tanimli', !!doc.querySelector('meta[charset]'));
-  ok('sayfada "AI" ibaresi yok', !/\bAI\b/.test(doc.body.textContent));
+
+  // GORUNEN metin: <script> ve <style> haric. body.textContent script
+  // govdesini de icerir, yani bu kontrol eskiden veri yukunu tariyordu --
+  // sayfayi degil. Sonuc: veri icinde AI (C3.ai) sembolu gecen bir gun
+  // test patliyordu, oysa ekranda "AI" diye bir ibare yoktu. Kural marka
+  // ibaresiyle ilgili; hisse sembolu mesru veridir.
+  const visibleText = (() => {
+    const clone = doc.body.cloneNode(true);
+    clone.querySelectorAll('script, style, template').forEach(n => n.remove());
+    return clone.textContent;
+  })();
+
+  ok('sayfada "AI" ibaresi yok', !/\bAI\b/.test(visibleText));
   ok('yatirim tavsiyesi uyarisi var',
-     doc.body.textContent.indexOf('yatirim tavsiyesi degildir') >= 0);
+     visibleText.indexOf('yatirim tavsiyesi degildir') >= 0);
 
   console.log(fails ? '\n' + fails + ' TEST BASARISIZ\n' : '\nTUM PANO TESTLERI GECTI\n');
   process.exit(fails ? 1 : 0);
