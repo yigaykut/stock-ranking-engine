@@ -1,12 +1,16 @@
 """Model havuzu — hepsi ayni arayuzu paylasir: fit / predict / save / load.
 
-Uc model, artan karmasiklik sirasiyla:
+Dort model, artan karmasiklik sirasiyla:
 
   RidgeRanker : numpy-only, her zaman calisir. TABAN CIZGISI.
                 Karmasik modeller bunu gecemiyorsa kullanilmaz.
   MLPRanker   : torch, capraz kesitsel. Dogrusal olmayan etkilesimleri yakalar.
   SeqRanker   : torch GRU, DIZI. "Son 10 gunde nasil degisti" sorusunu gorur —
                 derin ogrenmenin bu problemde gercek katki verdigi yer.
+  AttnRanker  : torch dikkat (attention), KUME. Gunun tum hisselerini birlikte
+                gorur: "bu hisse, bugunku alternatiflere GORE nerede?" Ilk uc
+                model her hisseyi tek basina puanlar; bu, goreliligi kayip
+                fonksiyonuna birakmak yerine mimariye koyar.
 
 Ortak tasarim kararlari
 -----------------------
@@ -359,12 +363,206 @@ class SeqRanker(BaseModel):
 
 
 # =============================================================================
+#  4) Capraz kesitsel dikkat (attention) — gunun TUM hisselerini birlikte gorur
+# =============================================================================
+class AttnRanker(BaseModel):
+    """Bir gunun hisselerini KUME olarak isleyen dikkat modeli.
+
+    NEDEN BU MIMARI
+    ---------------
+    Ridge, MLP ve GRU'nun ucu de her hisseyi TEK BASINA puanliyor; capraz
+    kesitsellik yalnizca kayip fonksiyonunda var. Oysa siralama dogasi geregi
+    GORECELIDIR: "momentumu %8" bilgisi tek basina bir sey ifade etmez, o gun
+    piyasadaki diger hisselerin momentumu %2 ise guclu, %20 ise zayiftir.
+
+    Bu model gunun hisselerini bir KUME olarak alir ve her hissenin gosterimini
+    ayni gunun digerlerine bakarak gunceller (self-attention). Yani "bugun bu
+    hisse, bugunku alternatiflere GORE ne durumda" sorusunu mimarinin kendisi
+    soruyor -- sonradan normalizasyonla degil.
+
+    PERMUTASYON ESDEGERLIGI
+    Konum kodlamasi (positional encoding) BILEREK YOK. Bir gunun hisseleri
+    sirali bir dizi degil, sirasiz bir kumedir; hisseleri karistirmak ciktiyi
+    ayni sekilde karistirmali, degistirmemeli. Konum kodlamasi eklemek modele
+    anlamsiz bir sira bilgisi ogretirdi. `test_attn.py` bunu dogruluyor.
+
+    MALIYET
+    Dikkat, gun buyuklugunde O(n^2). Egitimde gunler `max_set` buyuklugunde
+    parcalara bolunur: hem hesabi sinirlar hem de her parca gunun rastgele bir
+    alt kumesi oldugu icin duzenlilestirme (regularization) etkisi yapar.
+    Cikarimda gun butun halinde islenir (~2800 hisse, tek ileri gecis).
+
+    UYARI: Bu model taban cizgisini gecmek ZORUNDA degil. Terfi kapisi
+    (promote) digerleriyle ayni; kanit yoksa skorlamaya girmez.
+    """
+    name = "attn"
+    needs_sequence = False
+    needs_dates = True          # predict gun sinirlarini bilmek zorunda
+
+    def __init__(self, d_model: int = 64, heads: int = 4, layers: int = 2,
+                 dropout: float = 0.2, lr: float = 8e-4, epochs: int = 150,
+                 patience: int = 15, weight_decay: float = 1e-3,
+                 max_set: int = 256, seed: int = 11):
+        if not _TORCH:
+            raise ImportError("torch kurulu degil — AttnRanker kullanilamaz")
+        if d_model % heads != 0:
+            raise ValueError(f"d_model ({d_model}) heads'e ({heads}) bolunmeli")
+        self.cfg = dict(d_model=d_model, heads=heads, layers=layers,
+                        dropout=dropout, lr=lr, epochs=epochs, patience=patience,
+                        weight_decay=weight_decay, max_set=max_set, seed=seed)
+        self.net = None
+        self.mu = self.sd = None
+
+    # -- ag ----------------------------------------------------------------
+    def _build(self, n_f: int):
+        c = self.cfg
+
+        class Block(nn.Module):
+            """On-normlu (pre-norm) dikkat + ileri besleme bloku."""
+            def __init__(self):
+                super().__init__()
+                self.n1 = nn.LayerNorm(c["d_model"])
+                self.att = nn.MultiheadAttention(c["d_model"], c["heads"],
+                                                 dropout=c["dropout"],
+                                                 batch_first=True)
+                self.n2 = nn.LayerNorm(c["d_model"])
+                self.ff = nn.Sequential(
+                    nn.Linear(c["d_model"], c["d_model"] * 2), nn.GELU(),
+                    nn.Dropout(c["dropout"]),
+                    nn.Linear(c["d_model"] * 2, c["d_model"]))
+                self.drop = nn.Dropout(c["dropout"])
+
+            def forward(self, h):
+                q = self.n1(h)
+                a, _ = self.att(q, q, q, need_weights=False)
+                h = h + self.drop(a)
+                h = h + self.drop(self.ff(self.n2(h)))
+                return h
+
+        class Net(nn.Module):
+            def __init__(self):
+                super().__init__()
+                self.inp = nn.Sequential(
+                    nn.Linear(n_f, c["d_model"]), nn.GELU(),
+                    nn.LayerNorm(c["d_model"]))
+                self.blocks = nn.ModuleList([Block() for _ in range(c["layers"])])
+                self.head = nn.Sequential(
+                    nn.LayerNorm(c["d_model"]), nn.Dropout(c["dropout"]),
+                    nn.Linear(c["d_model"], 1))
+
+            def forward(self, x):
+                # x: (n, f) tek gunun capraz kesiti -> (n, 1)
+                # KONUM KODLAMASI YOK: kume, dizi degil.
+                flat = (x.dim() == 2)
+                if flat:
+                    x = x.unsqueeze(0)              # (1, n, f)
+                h = self.inp(x)
+                for b in self.blocks:
+                    h = b(h)
+                out = self.head(h)                  # (1, n, 1)
+                return out.squeeze(0) if flat else out
+
+        return Net()
+
+    # -- egitim ------------------------------------------------------------
+    def _capped_batches(self, dates: np.ndarray, rng: np.random.Generator
+                        ) -> list[np.ndarray]:
+        """Gun yiginlarini `max_set` buyuklugunde parcalara boler.
+
+        Dikkat O(n^2) oldugu icin 2000 hisselik bir gun tek yigin olarak agir.
+        Parcalar gunun rastgele alt kumeleri; her biri gecerli bir capraz kesit
+        ornegi. Bolme her cagrida yeniden karistirilir.
+        """
+        cap = int(self.cfg["max_set"])
+        out: list[np.ndarray] = []
+        for d in np.unique(dates):
+            idx = np.flatnonzero(dates == d)
+            if len(idx) < 8:                        # siralama icin cok kucuk
+                continue
+            rng.shuffle(idx)
+            for s in range(0, len(idx), cap):
+                part = idx[s:s + cap]
+                if len(part) >= 8:
+                    out.append(part)
+        return out
+
+    def fit(self, X, y, dates, val=None) -> dict:
+        X = np.asarray(X, dtype=np.float32)
+        y = np.asarray(y, dtype=np.float32)
+        self.mu, self.sd = X.mean(0), X.std(0)
+        self.sd[self.sd < 1e-9] = 1.0
+        Z = (X - self.mu) / self.sd
+
+        # Dogrulama dilimi ZAMANSAL: son %20 tarih.
+        if val is None:
+            uniq = np.array(sorted(set(dates)))
+            cut = uniq[int(len(uniq) * 0.8)] if len(uniq) > 4 else uniq[-1]
+            vm = dates >= cut
+        else:
+            vm = val
+        tm = ~vm
+
+        rng = np.random.default_rng(self.cfg["seed"])
+        self.net = self._build(Z.shape[1])
+        info = _train_torch(self.net,
+                            self._capped_batches(dates[tm], rng),
+                            torch.tensor(Z[tm]), torch.tensor(y[tm]),
+                            self._capped_batches(dates[vm], rng),
+                            torch.tensor(Z[vm]), y[vm],
+                            self.cfg["epochs"], self.cfg["lr"],
+                            self.cfg["weight_decay"], self.cfg["patience"],
+                            self.cfg["seed"])
+        info.update({"model": self.name, "features": Z.shape[1],
+                     "rows": int(tm.sum()), "max_set": self.cfg["max_set"],
+                     "params": sum(p.numel() for p in self.net.parameters())})
+        return info
+
+    # -- cikarim -----------------------------------------------------------
+    def predict(self, X, dates=None) -> np.ndarray:
+        """Gun bazli tahmin.
+
+        `dates` verilmezse TUM girdi tek bir gun kabul edilir. Canli tahmin
+        yollari zaten tek gunun satirlarini veriyor, orada dogru. Coklu tarih
+        iceren bir matris dates olmadan verilirse gunler birbirine karisir --
+        bu yuzden walk_forward `needs_dates` bayragina bakip tarihleri geciyor.
+        """
+        Z = ((np.asarray(X, dtype=np.float32) - self.mu) / self.sd)
+        self.net.eval()
+        out = np.zeros(len(Z), dtype=np.float32)
+        with torch.no_grad():
+            if dates is None:
+                return self.net(torch.tensor(Z)).squeeze(-1).cpu().numpy()
+            dates = np.asarray(dates)
+            for d in np.unique(dates):
+                m = dates == d
+                out[m] = self.net(torch.tensor(Z[m])).squeeze(-1).cpu().numpy()
+        return out
+
+    # -- kalicilik ---------------------------------------------------------
+    def __getstate__(self):
+        s = self.__dict__.copy()
+        s["net"] = None if self.net is None else self.net.state_dict()
+        s["_n_f"] = None if self.mu is None else len(self.mu)
+        return s
+
+    def __setstate__(self, s):
+        state = s.pop("net"); n_f = s.pop("_n_f", None)
+        self.__dict__.update(s)
+        self.net = None
+        if state is not None and n_f:
+            self.net = self._build(n_f)
+            self.net.load_state_dict(state)
+            self.net.eval()
+
+
+# =============================================================================
 #  Kayit defteri
 # =============================================================================
 AVAILABLE: dict[str, Any] = {"ridge": RidgeRanker}
 if _TORCH:
     AVAILABLE["mlp"] = MLPRanker
     AVAILABLE["seq"] = SeqRanker
+    AVAILABLE["attn"] = AttnRanker
 
 
 def torch_available() -> bool:
