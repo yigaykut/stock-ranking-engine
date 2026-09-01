@@ -283,6 +283,104 @@ finally:
 check("gercek kayit defteri kirlenmedi",
       tr.champion() is None or tr.REGISTRY == _real_reg)
 
+
+# ===========================================================================
+print("\n=== 9. DIZI MODELI CANLIDA CALISIYOR MU ===")
+# Dizi modelinin tum degeri "son N gunde nasil degisti" bilgisidir. Eskiden
+# canlida hic calistirilamiyordu (predict_live None donerdi), yani GRU
+# olculebiliyor ama KULLANILAMIYORDU. Pencere artik feature store'daki onceki
+# goruntulerden kuruluyor; burada o yolun gercekten isledigi test edilir.
+from src import ml as _mlmod                                    # noqa: E402
+
+if not mz.torch_available():
+    print("  ATLANDI  torch yok")
+else:
+    _store_real = _mlmod.FEATURE_STORE
+    _dir_real, _reg_real = tr.MODEL_DIR, tr.REGISTRY
+    _tmp9 = Path(tempfile.mkdtemp(prefix="seqlive_"))
+    try:
+        _store = _tmp9 / "store"
+        _store.mkdir()
+        _mlmod.FEATURE_STORE = _store
+        tr.MODEL_DIR, tr.REGISTRY = _tmp9, _tmp9 / "registry.json"
+
+        WIN = 6
+        p9 = _make_panel(n_days=40, n_stocks=40, n_feat=6, signal=0.7, seed=21)
+        names9 = p9.feature_names
+
+        # Panelin SON gunu "bugun"un canli satiri; oncekiler feature store'a
+        # yazilir. Yani model tam da uretimde gorecegi kurulumla calisir.
+        all_dates = sorted(set(p9.dates))
+        hist_dates, live_date = all_dates[:-1], all_dates[-1]
+
+        # Sadece ilk 30 sembol gecmise yazilir -> kalan 10'u pencere kuramaz
+        short_tickers = {f"T{i:03d}" for i in range(30, 40)}
+        for d in hist_dates:
+            m = (p9.dates == d)
+            rows = {"snapshot_date": p9.dates[m], "ticker": p9.tickers[m]}
+            for j, nm in enumerate(names9):
+                rows[nm] = p9.X[m, j]
+            frame = pd.DataFrame(rows)
+            frame = frame[~frame["ticker"].isin(short_tickers)]
+            frame.to_csv(_store / f"snapshot_{d}.csv", index=False)
+
+        check("gecmis goruntuler yazildi",
+              len(list(_store.glob("snapshot_*.csv"))) == len(hist_dates),
+              f"{len(hist_dates)} gun")
+
+        # Dizi modelini egit (canli satir DISARIDA — sizinti olmasin)
+        seq_src = ds.Panel(X=ds.cross_sectional_rank(p9.X, p9.dates),
+                           y=ds.demean_by_date(p9.y, p9.dates),
+                           dates=p9.dates, tickers=p9.tickers,
+                           feature_names=names9, horizon=21)
+        Xs, ys, sd, st = ds.build_sequences(seq_src, window=WIN, min_len=3)
+        tr_m = sd != live_date
+        seq = mz.AVAILABLE["seq"](window=WIN)
+        seq.fit(Xs[tr_m], ys[tr_m], sd[tr_m])
+        mp9 = _tmp9 / "seq_h21.pkl"
+        seq.save(mp9)
+
+        tr._save_registry({"champion": {
+            "model": "seq", "horizon": 21, "path": str(mp9), "weight": 5.0,
+            "feature_names": names9, "rank_features": True, "window": WIN,
+        }, "history": [], "candidates": {}})
+
+        live9 = pd.DataFrame({"ticker": p9.tickers[p9.dates == live_date]})
+        for j, nm in enumerate(names9):
+            live9[nm] = p9.X[p9.dates == live_date, j]
+
+        preds9 = tr.predict_live(live9, names9)
+        check("dizi modeli canlida tahmin URETIYOR", preds9 is not None,
+              f"{0 if preds9 is None else len(preds9)} hisse")
+
+        if preds9:
+            check("gecmisi olmayan semboller kapsam DISINDA",
+                  not (set(preds9) & short_tickers),
+                  f"sizan: {sorted(set(preds9) & short_tickers)[:3]}")
+            check("gecmisi olan tum semboller kapsamda", len(preds9) == 30,
+                  f"{len(preds9)}/30")
+            v9 = np.array(list(preds9.values()))
+            check("tahminler 0-100 olceginde",
+                  v9.min() >= -0.01 and v9.max() <= 100.01,
+                  f"[{v9.min():.1f}, {v9.max():.1f}]")
+
+            truth9 = {t: y for t, y in zip(p9.tickers[p9.dates == live_date],
+                                           p9.y[p9.dates == live_date])}
+            keys = sorted(preds9)
+            ic9 = mz.spearman(np.array([preds9[k] for k in keys]),
+                              np.array([truth9[k] for k in keys]))
+            check("canli dizi tahmini sinyalle uyumlu", ic9 > 0.15, f"IC={ic9:.3f}")
+
+        # Gecmis yoksa uydurma pencere kurup tahmin URETMEMELI
+        for f in _store.glob("snapshot_*.csv"):
+            f.unlink()
+        check("gecmis yokken tahmin reddediliyor",
+              tr.predict_live(live9, names9) is None)
+    finally:
+        _mlmod.FEATURE_STORE = _store_real
+        tr.MODEL_DIR, tr.REGISTRY = _dir_real, _reg_real
+        shutil.rmtree(_tmp9, ignore_errors=True)
+
 print()
 print(f"{'TUM ML TESTLERI GECTI' if not fails else str(fails) + ' TEST BASARISIZ'}\n")
 sys.exit(1 if fails else 0)

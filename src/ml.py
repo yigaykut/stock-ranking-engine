@@ -55,6 +55,12 @@ def to_feature_matrix(result_df: pd.DataFrame, factor_ids: list[str]) -> pd.Data
         for k, v in rets.items():
             row[f"trailing_return_{k}"] = v
 
+        # Ham seri ozellikleri: modelin 28 insan hipotezinin disinda gordugu
+        # tek sey. Skorlamaya girmez; feature store'a yazilir ve egitimde
+        # kullanilir (bkz. factors.series_features).
+        for k, v in (r.get("series") or {}).items():
+            row[f"series_{k}"] = v
+
         factors = r.get("factors") or {}
         for fid in factor_ids:
             fd = factors.get(fid)
@@ -235,12 +241,40 @@ def compute_deltas(result_df: pd.DataFrame) -> tuple[pd.DataFrame, dict]:
     }
 
 
-def load_all_snapshots() -> pd.DataFrame:
-    """Biriken tum anlik goruntuleri tek DataFrame'de birlestirir."""
-    if not FEATURE_STORE.exists():
+def load_all_snapshots(store: Path | None = None) -> pd.DataFrame:
+    """Biriken tum anlik goruntuleri tek DataFrame'de birlestirir.
+
+    `store`, canli feature store yerine baska bir dizinden okumaya yarar —
+    ornegin backfill.py'nin urettigi gecmise donuk panel. Iki depo bilincli
+    olarak AYRI tutulur: gecmise donuk satirlarda temel veri sutunlari hic
+    yoktur ve birlestirilirlerse model, "sutun var mi yok mu" bilgisinden
+    tarihi cikarabilir hale gelir.
+    """
+    store = store or FEATURE_STORE
+    if not store.exists():
         return pd.DataFrame()
     frames = []
-    for p in sorted(FEATURE_STORE.glob("snapshot_*.csv")):
+    for p in sorted(store.glob("snapshot_*.csv")):
+        try:
+            frames.append(pd.read_csv(p))
+        except Exception:
+            continue
+    return pd.concat(frames, ignore_index=True) if frames else pd.DataFrame()
+
+
+def load_recent_snapshots(n: int, store: Path | None = None) -> pd.DataFrame:
+    """Yalnizca SON n anlik goruntuyu okur.
+
+    Dizi modelinin canli tahmini icin gereken pencere sabit uzunluktadir; tum
+    depoyu okumak gereksizdir. Bir yil biriktiginde feature store yuzlerce MB
+    olur ve her taramada bastan okunmasi taramaya dakikalar ekler.
+    """
+    store = store or FEATURE_STORE
+    if not store.exists() or n <= 0:
+        return pd.DataFrame()
+    paths = sorted(store.glob("snapshot_*.csv"))[-n:]
+    frames = []
+    for p in paths:
         try:
             frames.append(pd.read_csv(p))
         except Exception:
@@ -252,11 +286,19 @@ def load_all_snapshots() -> pd.DataFrame:
 #  2) LABEL
 # =============================================================================
 def label_forward_returns(snapshots: pd.DataFrame, horizon_days: int = 21,
-                          use_cache: bool = True) -> pd.DataFrame:
+                          use_cache: bool = True,
+                          cache_max_age_days: int = 7) -> pd.DataFrame:
     """Her (tarih, hisse) satirina ileri getiri etiketi ekler.
 
     Yalnizca anlik goruntu tarihinden EN AZ horizon_days gun gecmis satirlar
     etiketlenir; digerleri NaN kalir (henuz sonuc belli degil).
+
+    ONBELLEK ONCELIKLI. Etiket, GECMIS fiyattan hesaplanir: bir anlik
+    goruntunun ufku dolmussa gereken fiyat zaten onbellekteki gecmiste vardir.
+    Normal `fetch` 6 saatlik TTL kullandigi icin binlerce sembol icin
+    gereksiz ag istegi dogurur ve hiz sinirina takilir — bir keresinde egitim
+    bu yuzden dakikalarca ag bekledi. Once uzun omurlu onbellek denenir, ag
+    yalnizca hic kayit yoksa kullanilir.
     """
     from .providers import yahoo
 
@@ -269,16 +311,31 @@ def label_forward_returns(snapshots: pd.DataFrame, horizon_days: int = 21,
     df[out_col] = np.nan
 
     rate_limited = 0
+    from_cache = 0
+    from_network = 0
     for ticker, grp in df.groupby("ticker"):
-        # Hiz siniri etiketlemeyi DURDURMAMALI: elde ne varsa onunla devam
-        # edilir, kac sembolun atlandigi sonunda raporlanir.
-        try:
-            bundle = yahoo.fetch(str(ticker), period="2y", use_cache=use_cache)
-        except yahoo.RateLimited:
-            rate_limited += 1
-            continue
-        except Exception:
-            continue
+        bundle = None
+        if use_cache:
+            try:
+                bundle = yahoo.fetch_cached(
+                    str(ticker), "2y",
+                    max_age_seconds=cache_max_age_days * 24 * 3600)
+            except Exception:
+                bundle = None
+            if bundle:
+                from_cache += 1
+
+        if not bundle:
+            # Hiz siniri etiketlemeyi DURDURMAMALI: elde ne varsa onunla devam
+            # edilir, kac sembolun atlandigi sonunda raporlanir.
+            try:
+                bundle = yahoo.fetch(str(ticker), period="2y", use_cache=use_cache)
+                from_network += 1
+            except yahoo.RateLimited:
+                rate_limited += 1
+                continue
+            except Exception:
+                continue
 
         hist = (bundle or {}).get("history")
         if not isinstance(hist, pd.DataFrame) or hist.empty:
@@ -302,6 +359,9 @@ def label_forward_returns(snapshots: pd.DataFrame, horizon_days: int = 21,
             if p0 > 0:
                 df.at[idx, out_col] = p1 / p0 - 1
 
+    if from_network:
+        print(f"      etiketleme: {from_cache} sembol onbellekten, "
+              f"{from_network} sembol agdan")
     if rate_limited:
         print(f"      UYARI: {rate_limited} sembol hiz siniri nedeniyle "
               f"etiketlenemedi; bir sure sonra tekrar calistir.")
@@ -326,6 +386,13 @@ def information_coefficients(labeled: pd.DataFrame, factor_ids: list[str],
     rows = []
     for fid in factor_ids:
         col = f"score_{fid}"
+        # Gecmise donuk panelde yalnizca HAM deger var (score_* sutunlari
+        # skorlama sirasinda uretiliyor, panelde skorlama yok). IC bir
+        # SIRALAMA korelasyonu oldugu icin ham deger uzerinden de dogru
+        # hesaplanir -- tek fark yon: 'lower_better' faktorlerde isaret ters
+        # cikar ve bu, yorumlarken bilinmesi gereken bir seydir.
+        if col not in labeled.columns:
+            col = f"raw_{fid}"
         if col not in labeled.columns or label_col not in labeled.columns:
             continue
 
@@ -343,6 +410,7 @@ def information_coefficients(labeled: pd.DataFrame, factor_ids: list[str],
                 std_ic = float(arr.std(ddof=1)) if arr.size > 1 else float("nan")
                 rows.append({
                     "factor": fid,
+                    "source_col": col,
                     "ic_mean": round(mean_ic, 4),
                     "ic_std": None if not np.isfinite(std_ic) else round(std_ic, 4),
                     # ICIR = IC / std(IC): tutarlilik olcusu, Sharpe'in faktor karsiligi

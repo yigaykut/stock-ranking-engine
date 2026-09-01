@@ -42,3 +42,6 @@ desktop.ini
 #   EKSIKLIKLER.md   audit report quoting cluster budgets and penalties
 docs/PARAMETRELER.md
 docs/EKSIKLIKLER.md
+
+# Sifreli yedek arsivleri (buyuk ve ozel)
+yedek/

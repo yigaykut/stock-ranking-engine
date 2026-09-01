@@ -13,7 +13,7 @@ from pathlib import Path
 
 import pandas as pd
 
-from .providers import reddit_wsb
+from .providers import cache, reddit_wsb
 from .providers.cache import get_or_fetch
 
 # ETF / endeks / kripto gibi hisse olmayan semboller elenir
@@ -95,14 +95,20 @@ def _mcap(row: dict) -> float:
         return 0.0
 
 
-def _from_us_listings(min_mcap: float, max_mcap: float,
-                      exchanges: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX")) -> list[str]:
-    """Tum ABD borsalarina kote hisseler, PIYASA DEGERI BANDINA gore suzulur.
+# Kotasyon listesi gunde bir kez cekilir; gun icinde birkac sembol degismez.
+_LISTINGS_TTL = 24 * 3600
+# Bu sayinin altinda donen bir cekim BASARISIZ sayilir. ABD borsalarinda
+# piyasa degeri bilinen binlerce hisse var; 500'un altina dusmesinin tek
+# makul aciklamasi ucun erisilemez olmasidir.
+_LISTINGS_MIN = 500
+_LISTINGS_KEY = "us_listings_v2"
 
-    Bu kaynak sistemin "gelecek vadeden hisse" arayisinin temelidir: S&P 500
-    tanimi geregi olgunlasmis devleri icerir; yukselen sirketler kucuk ve orta
-    olcekte yasar.
-    """
+# Son cagriya ait durum — build() raporlayabilsin diye.
+LAST_LISTINGS_STATE: dict = {}
+
+
+def _fetch_us_listings(exchanges: tuple[str, ...]) -> list[tuple[str, float]]:
+    """api.nasdaq.com'dan (sembol, piyasa degeri) ciftleri. Suzme yok."""
     import requests
 
     headers = {"User-Agent": "Mozilla/5.0 (Windows NT 10.0; Win64; x64)",
@@ -116,17 +122,69 @@ def _from_us_listings(min_mcap: float, max_mcap: float,
         except Exception:
             continue
 
-    picked = []
+    out: list[tuple[str, float]] = []
+    seen: set[str] = set()
     for row in rows:
         sym = str(row.get("symbol", "")).strip().upper().replace(".", "-")
-        if not sym or not _TICKER_RE.match(sym):
+        if not sym or sym in seen or not _TICKER_RE.match(sym):
             continue
         m = _mcap(row)
         if m <= 0:                      # piyasa degeri bilinmiyor -> atla
             continue
-        if min_mcap <= m <= max_mcap:
-            picked.append((sym, m))
+        seen.add(sym)
+        out.append((sym, m))
+    return out
 
+
+def us_listings(exchanges: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX")
+                ) -> tuple[list[tuple[str, float]], dict]:
+    """Kotasyon listesi + nereden geldigi bilgisi.
+
+    Onbellek katmani burada KRITIKTIR. Eskiden her cagri dogrudan aga cikiyordu
+    ve ag hatasi sessizce bos liste donduruyordu; evren cokuyor, tarama sadece
+    izleme listesindeki birkac hisseyi skorluyor ve pano O HALIYLE yeniden
+    yaziliyordu. Kullanicinin sitesinde "sadece kendi ekledigim hisseler
+    gorunuyor" sikayetinin sebebi buydu.
+
+    Sira: taze onbellek -> ag -> BAYAT onbellek -> bos.
+    """
+    global LAST_LISTINGS_STATE
+    ident = f"{_LISTINGS_KEY}:{'+'.join(exchanges)}"
+    cached = cache.peek("universe", ident)
+
+    if cached and cached[1] < _LISTINGS_TTL and len(cached[0]) >= _LISTINGS_MIN:
+        LAST_LISTINGS_STATE = {"source": "onbellek", "count": len(cached[0]),
+                               "age_hours": round(cached[1] / 3600, 1), "ok": True}
+        return cached[0], LAST_LISTINGS_STATE
+
+    fresh = _fetch_us_listings(exchanges)
+    if len(fresh) >= _LISTINGS_MIN:
+        cache.put("universe", ident, fresh)
+        LAST_LISTINGS_STATE = {"source": "ag", "count": len(fresh),
+                               "age_hours": 0.0, "ok": True}
+        return fresh, LAST_LISTINGS_STATE
+
+    if cached and len(cached[0]) >= _LISTINGS_MIN:
+        LAST_LISTINGS_STATE = {"source": "bayat_onbellek", "count": len(cached[0]),
+                               "age_hours": round(cached[1] / 3600, 1), "ok": True,
+                               "fetched_now": len(fresh)}
+        return cached[0], LAST_LISTINGS_STATE
+
+    LAST_LISTINGS_STATE = {"source": "basarisiz", "count": len(fresh),
+                           "age_hours": None, "ok": False}
+    return fresh, LAST_LISTINGS_STATE
+
+
+def _from_us_listings(min_mcap: float, max_mcap: float,
+                      exchanges: tuple[str, ...] = ("NASDAQ", "NYSE", "AMEX")) -> list[str]:
+    """Tum ABD borsalarina kote hisseler, PIYASA DEGERI BANDINA gore suzulur.
+
+    Bu kaynak sistemin "gelecek vadeden hisse" arayisinin temelidir: S&P 500
+    tanimi geregi olgunlasmis devleri icerir; yukselen sirketler kucuk ve orta
+    olcekte yasar.
+    """
+    rows, _ = us_listings(exchanges)
+    picked = [(s, m) for s, m in rows if min_mcap <= m <= max_mcap]
     # Buyukten kucuge: likidite ve veri kalitesi ust bantta daha iyi
     picked.sort(key=lambda x: -x[1])
     return [s for s, _ in picked]
@@ -207,4 +265,9 @@ def build(sources: list[str], wsb_top: int = 60, symbols_file: str | None = None
 
     breakdown = {src: len(syms) for src, syms in collected.items()}
     breakdown["final_unique"] = len(ordered)
+
+    # Kotasyon listesi kullanildiysa nereden geldigini de bildir: cagiran taraf
+    # (cmd_scan) evrenin cokup cokmedigine buna bakarak karar veriyor.
+    if any(src.strip().lower() in PRESETS for src in sources):
+        breakdown["_listings"] = dict(LAST_LISTINGS_STATE)
     return ordered, breakdown

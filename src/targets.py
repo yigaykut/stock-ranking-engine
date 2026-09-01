@@ -93,6 +93,92 @@ def _cluster(levels: list[float], tol: float = 0.02) -> list[float]:
 # =============================================================================
 #  Hedefler
 # =============================================================================
+def _dispersion(values: list[float], target: float) -> dict[str, Any]:
+    """Yontemler arasi dagilim = belirsizligin dogrudan olcusu (bulgu O2).
+
+    Hedef tek bir sayi olarak sunuldugunda sahte kesinlik uretiyordu: uc ayri
+    yontem 53 ve 63 dedigi halde cikti "58" oluyor ve aradaki %19'luk
+    anlasmazlik kayboluyordu. Yontemler birbirine yakinsa hedef guvenilir;
+    uzaksa hedefin kendisi degil, ARALIK bilgidir.
+    """
+    vals = [v for v in values if _ok(v) and v > 0]
+    if not vals or not target:
+        return {}
+    lo, hi = min(vals), max(vals)
+    spread = 100.0 * (hi - lo) / target
+
+    if len(vals) < 2:
+        conf, conf_tr = "dogrulanmadi", "Tek yontem - baska bir yontemle dogrulanmadi"
+    elif spread < 10:
+        conf, conf_tr = "yuksek", "Yontemler birbirini dogruluyor"
+    elif spread < 25:
+        conf, conf_tr = "orta", "Yontemler arasinda kayda deger fark var"
+    else:
+        conf, conf_tr = "dusuk", "Yontemler ciddi bicimde ayrisiyor - hedef degil ARALIK okunmali"
+
+    return {
+        "range_low": round(lo, 4),
+        "range_high": round(hi, 4),
+        "spread_pct": round(spread, 1),
+        "methods_n": len(vals),
+        "confidence": conf,
+        "confidence_tr": conf_tr,
+    }
+
+
+# =============================================================================
+#  Islem maliyeti (bulgu D3)
+# =============================================================================
+# Evren kucuk sirket agirlikli ve filtre esigi gunluk yalnizca 1M USD. Boyle
+# bir hissede alis-satis makasi %1-3 olabilir. "%8 hedef" brut bir sayidir;
+# makasin %3'u odenirse gercek hedef %5'tir. Butun hedef/stop hesaplari bugune
+# kadar brutu gosteriyordu.
+#
+# Makas dogrudan olculemiyor (Yahoo ucu bid/ask gecmisi vermiyor), bu yuzden
+# LIKIDITEDEN tahmin ediliyor. Model kaba ama yonu dogru: hacim dustukce makas
+# buyur, fiyat dustukce kurus adimi orani buyur.
+COMMISSION_PCT = 0.0          # ABD'de cogu aracida sifir
+MIN_SPREAD_PCT = 0.05
+MAX_SPREAD_PCT = 3.00
+
+
+def estimate_costs(price: float, avg_dollar_volume: float | None,
+                   position_usd: float | None = None) -> dict[str, Any]:
+    """Gidis-donus islem maliyeti tahmini (yuzde)."""
+    if not price or price <= 0:
+        return {"available": False}
+
+    # 1) Kurus adimi tabani: 5 dolarlik hissede 1 sentlik adim %0.2'dir.
+    tick_pct = 100.0 * 0.01 / price
+
+    # 2) Likidite bileseni: gunluk hacim milyon dolar cinsinden.
+    dv_m = (float(avg_dollar_volume) / 1e6) if avg_dollar_volume else 0.5
+    dv_m = max(0.05, dv_m)
+    liq_pct = 0.55 / (dv_m ** 0.5)
+
+    spread_pct = min(MAX_SPREAD_PCT, max(MIN_SPREAD_PCT, tick_pct + liq_pct))
+
+    # 3) Piyasa etkisi: pozisyon gunluk hacmin ne kadari? Verilmezse "gunluk
+    #    hacmin %5'i" varsayilir (panoda gosterilen girilebilir azami pozisyon).
+    adv = float(avg_dollar_volume) if avg_dollar_volume else 0.0
+    part = (float(position_usd) / adv) if (position_usd and adv > 0) else 0.05
+    impact_pct = 10.0 * (max(0.0, part) ** 0.5) * (spread_pct / 100.0) * 100.0
+    impact_pct = min(2.0, impact_pct)
+
+    one_way = spread_pct / 2.0 + impact_pct + COMMISSION_PCT
+    return {
+        "available": True,
+        "spread_pct": round(spread_pct, 3),
+        "impact_pct": round(impact_pct, 3),
+        "commission_pct": COMMISSION_PCT,
+        "one_way_pct": round(one_way, 3),
+        "round_trip_pct": round(2 * one_way, 3),
+        "assumed_participation": round(part, 4),
+        "note_tr": ("Makas dogrudan olculemedigi icin likiditeden tahmin "
+                    "edildi; gercek maliyet farkli olabilir."),
+    }
+
+
 def short_term_target(df: pd.DataFrame, price: float) -> dict[str, Any]:
     """KISA VADE (yaklasik 1-3 ay) — teknik hedef.
 
@@ -161,6 +247,7 @@ def short_term_target(df: pd.DataFrame, price: float) -> dict[str, Any]:
         "candidates": [{"yontem": k, "hedef": round(v, 4), "aciklama": d}
                        for k, v, d in methods],
         "next_resistances": [round(r, 4) for r in res[:3]],
+        **_dispersion(vals, target),
     }
 
 
@@ -233,6 +320,11 @@ def long_term_target(df: pd.DataFrame, bundle: dict, price: float) -> dict[str, 
         "analyst_low": _n(tgt.get("low")),
         "candidates": [{"yontem": k, "hedef": round(v, 4), "agirlik": w, "aciklama": d}
                        for k, v, w, d in methods],
+        # Analist bandi da bir yontem gibi degerlendirilir: hedefin aralik
+        # olarak sunulmasi icin en genis bilgi kaynagi odur.
+        **_dispersion([v for _, v, _, _ in methods]
+                      + [x for x in (_f(tgt.get("low")), _f(tgt.get("high")))
+                         if _ok(x) and x > 0], target),
     }
 
 
@@ -486,6 +578,48 @@ def sell_signals(df: pd.DataFrame, bundle: dict, price: float,
 # =============================================================================
 #  Tek giris noktasi
 # =============================================================================
+def earnings_countdown(bundle: dict) -> dict[str, Any]:
+    """Bilancoya kalan gun (bulgu 3.4).
+
+    Bu bilgi sistemde zaten vardi ama yalnizca bir CEZA olarak (-0.20 sigma)
+    kullaniliyordu: kullanici skorun neden dustugunu goruyor, ama TARIHI
+    gormuyordu. Oysa 21 gunluk ufukta getiriyi en cok belirleyen tek olay
+    budur -- pozisyon boyutu ve zamanlama kararini dogrudan etkiler.
+    """
+    cal = bundle.get("calendar") or {}
+    raw = None
+    for key in ("Earnings Date", "earningsDate"):
+        v = cal.get(key)
+        if isinstance(v, (list, tuple)) and v:
+            v = v[0]
+        if v is not None:
+            raw = v
+            break
+    if raw is None:
+        return {"available": False}
+
+    try:
+        d = pd.Timestamp(raw).normalize()
+    except Exception:
+        return {"available": False}
+
+    days = int((d - pd.Timestamp.utcnow().normalize().tz_localize(None)).days)
+    if days < -3:
+        return {"available": False}      # gecmis tarih: veri bayat
+
+    if days <= 2:
+        sev, tr = "yuksek", "Bilanco cok yakin - tek gunde buyuk hareket olabilir"
+    elif days <= 7:
+        sev, tr = "orta", "Bilanco bu hafta - pozisyon boyutu kucultulmeli"
+    elif days <= 21:
+        sev, tr = "dusuk", "Bilanco 21 gunluk ufuk icinde"
+    else:
+        sev, tr = "yok", "Bilanco yakin degil"
+
+    return {"available": True, "date": d.strftime("%Y-%m-%d"), "days": days,
+            "severity": sev, "note_tr": tr}
+
+
 def analyze(df: pd.DataFrame, bundle: dict, entry_price: float | None = None,
             score_now: float | None = None,
             score_at_entry: float | None = None) -> dict[str, Any]:
@@ -509,6 +643,29 @@ def analyze(df: pd.DataFrame, bundle: dict, entry_price: float | None = None,
         "stops": stops,
         **sig,
     }
+
+    # --- islem maliyeti: hedefler NET olarak da gosterilir (bulgu D3)
+    adv = None
+    if len(df) >= 30 and "Volume" in df:
+        try:
+            adv = float((df["Close"] * df["Volume"]).tail(30).mean())
+        except Exception:
+            adv = None
+    costs = estimate_costs(price, adv)
+    out["costs"] = costs
+    if costs.get("available"):
+        rt = costs["round_trip_pct"]
+        for key in ("short_term", "long_term"):
+            blk = out.get(key) or {}
+            if blk.get("available") and blk.get("upside_pct") is not None:
+                blk["net_upside_pct"] = round(blk["upside_pct"] - rt, 2)
+                # Maliyet, getirinin ucte birinden fazlasini yiyorsa bunu
+                # sessizce gecmek yaniltici olur.
+                blk["cost_heavy"] = bool(blk["upside_pct"] > 0 and
+                                         rt > blk["upside_pct"] / 3.0)
+
+    # --- bilancoya kalan gun (kartta gosterilir)
+    out["earnings"] = earnings_countdown(bundle)
 
     # --- pozisyon matematigi
     if entry_price and entry_price > 0:

@@ -50,6 +50,71 @@ def _ret(close: pd.Series, days: int) -> float:
 
 
 # =============================================================================
+#  HAM SERI OZELLIKLERI — yalnizca MODEL icin, skorlamaya girmez
+# =============================================================================
+# Model bugune kadar 28 skorun disinda hicbir sey gormuyordu; yani insan
+# hipotezleriyle sinirliydi. Bir sinir agindan "insanin dusunmedigi bir sey"
+# ogrenmesini beklemek, ona yalnizca insanin dusundugu buyuklukleri vererek
+# mumkun degil.
+#
+# Buradaki buyuklukler ham ve yorumsuzdur: cesitli gecikmelerde getiri,
+# gerceklesmis oynaklik, hacim orani, ortalamalara ATR cinsinden uzaklik.
+# Bir faktor DEGILDIR: skorlamaya girmez, agirligi yoktur, panoda gorunmez.
+# Yalnizca feature store'a yazilir ve egitimde kullanilir.
+def series_features(df: pd.DataFrame) -> dict[str, float | None]:
+    """Fiyat/hacim serisinden ham model girdileri."""
+    out: dict[str, float | None] = {}
+    close = df["Close"].dropna()
+    if len(close) < 30:
+        return out
+
+    for d in (1, 5, 10, 21, 63, 126, 252):
+        out[f"ret_{d}d"] = _n(_ret(close, d))
+
+    r = close.pct_change().dropna()
+    for w in (21, 63):
+        if len(r) >= w:
+            out[f"vol_{w}d"] = _n(float(r.tail(w).std() * (252 ** 0.5)))
+    # Oynakligin oynakligi: rejim degisiminin erken izi
+    if out.get("vol_21d") and out.get("vol_63d"):
+        out["vol_ratio"] = _n(out["vol_21d"] / out["vol_63d"])
+
+    if len(r) >= 63:
+        tail = r.tail(63)
+        out["skew_63d"] = _n(float(tail.skew()))
+        out["kurt_63d"] = _n(float(tail.kurt()))
+
+    if "Volume" in df:
+        v = df["Volume"].dropna()
+        if len(v) >= 60:
+            base = float(v.tail(60).mean())
+            out["volume_ratio_5d"] = _n(float(v.tail(5).mean()) / base) if base else None
+            out["volume_trend_21d"] = (_n(float(v.tail(21).mean()) / base)
+                                       if base else None)
+
+    # Ortalamalara ATR cinsinden uzaklik: yuzde yerine ATR kullanmak, farkli
+    # oynakliktaki hisseleri karsilastirilabilir kilar.
+    try:
+        atr = float(ta.atr(df["High"], df["Low"], df["Close"], 14).dropna().iloc[-1])
+    except Exception:
+        atr = float("nan")
+    px = float(close.iloc[-1])
+    if atr == atr and atr > 0:
+        out["atr_pct"] = _n(100.0 * atr / px)
+        for w in (20, 50, 200):
+            if len(close) >= w:
+                ma = float(close.rolling(w).mean().iloc[-1])
+                out[f"ma{w}_dist_atr"] = _n((px - ma) / atr)
+
+    if len(close) >= 252:
+        window = close.tail(252)
+        out["drawdown_252d"] = _n(float(px / window.max() - 1))
+        out["range_pos_252d"] = _n(float((px - window.min()) /
+                                         max(1e-9, window.max() - window.min())))
+    return out
+
+
+# =============================================================================
 #  MOMENTUM
 # =============================================================================
 def f_price_momentum_12_1(close: pd.Series) -> tuple[float, dict]:
@@ -1193,6 +1258,8 @@ def compute_all(ticker: str, bundle: dict, bench_close: pd.Series | None,
             "1m": _n(_ret(close, 21)), "3m": _n(_ret(close, 63)),
             "6m": _n(_ret(close, 126)), "12m": _n(_ret(close, 252)),
         },
+        # Yalnizca model icin; skorlamaya girmez (bkz. series_features)
+        "series": series_features(df),
         "raw": raw,
         "meta": meta,
         "penalty_flags": penalties,

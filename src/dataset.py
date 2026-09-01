@@ -65,9 +65,12 @@ class Panel:
 #  Panel kurulumu
 # =============================================================================
 def load_panel(horizon: int = 21, min_rows_per_date: int = 30,
-               use_cache: bool = True, label_col: str | None = None
-               ) -> tuple[Panel | None, dict]:
+               use_cache: bool = True, label_col: str | None = None,
+               store: Path | None = None) -> tuple[Panel | None, dict]:
     """Tum anlik goruntuleri birlestirip etiketli panel uretir.
+
+    `store` verilirse canli feature store yerine o dizinden okunur (gecmise
+    donuk on egitim paneli icin).
 
     Doner: (Panel | None, tani sozlugu)
     Etiketlenebilir satir yoksa Panel None doner — bu bir hata degil, sistemin
@@ -75,7 +78,7 @@ def load_panel(horizon: int = 21, min_rows_per_date: int = 30,
     """
     from .ml import label_forward_returns, load_all_snapshots
 
-    snaps = load_all_snapshots()
+    snaps = load_all_snapshots(store)
     info: dict = {"snapshots": 0, "rows": 0, "labeled": 0, "features": 0}
     if snaps.empty:
         info["reason"] = "feature store bos"
@@ -304,19 +307,20 @@ def build_sequences(panel: Panel, window: int = 10, min_len: int | None = None
 # =============================================================================
 #  Hazirlik kapisi
 # =============================================================================
-def readiness(horizon: int = 21) -> dict:
+def readiness(horizon: int = 21, store: Path | None = None) -> dict:
     """Egitim icin yeterli veri var mi? Yoksa NE KADAR eksik?
 
     Bu kapi bilincli olarak katidir. Az veriyle egitilen bir model, guvenilir
     gorunen ama tamamen gurultuye uydurulmus tahminler uretir — sistemin
     en buyuk riski budur.
     """
-    if not FEATURE_STORE.exists():
+    store = store or FEATURE_STORE
+    if not store.exists():
         snaps, span = 0, 0
         dates: list[str] = []
     else:
         dates = sorted({p.stem.replace("snapshot_", "")[:10]
-                        for p in FEATURE_STORE.glob("snapshot_*.csv")})
+                        for p in store.glob("snapshot_*.csv")})
         snaps = len(dates)
         span = 0
         if snaps >= 2:

@@ -80,6 +80,23 @@ def _payload(results: list[dict], history: list[dict]) -> dict:
             "riskReward": a.get("risk_reward"),
             "technical": a.get("technical", {}),
             "spark": spark,
+            # --- Hedefin BELIRSIZLIGI (bulgu O2) -------------------------
+            # Yontemler arasi yayilim zaten hesaplaniyordu ve tek sayiya
+            # cokertilip atiliyordu. Asil bilgi o yayilimda.
+            "shortRange": ([st.get("range_low"), st.get("range_high")]
+                           if st.get("range_low") is not None else None),
+            "shortSpreadPct": st.get("spread_pct"),
+            "shortConfidence": st.get("confidence_tr"),
+            "shortNetUpside": st.get("net_upside_pct"),
+            "shortCostHeavy": bool(st.get("cost_heavy")),
+            "longRange": ([lt.get("range_low"), lt.get("range_high")]
+                          if lt.get("range_low") is not None else None),
+            "longSpreadPct": lt.get("spread_pct"),
+            "longConfidence": lt.get("confidence_tr"),
+            "longNetUpside": lt.get("net_upside_pct"),
+            # --- Islem maliyeti (bulgu D3) ve bilanco tarihi --------------
+            "costs": a.get("costs") or {},
+            "earnings": a.get("earnings") or {},
         })
 
     return {
@@ -281,13 +298,47 @@ function detailLines(r) {{
     out.push(`Stop <b>${{f2(r.stop)}}</b> (${{r.stopMethod}}) — guncel fiyatin `
            + `%${{f1(r.stopDistPct)}} altinda. ${{r.stopWhy || ''}}`);
   }}
+  /* Hedef tek sayi olarak sunuldugunda sahte kesinlik uretiyor. Yontemler
+     birbirine yakinsa hedef guvenilir; uzaksa bilgi olan sey ARALIK. */
+  const band = (rng, spread, conf) => (rng
+    ? ` &middot; aralik <b>${{f2(rng[0])}}&ndash;${{f2(rng[1])}}</b>`
+      + (spread != null ? ` (yayilim %${{f1(spread)}})` : '')
+      + (conf ? `<br><span style="opacity:.8">${{conf}}</span>` : '')
+    : '');
+
   if (r.shortTarget != null) {{
     out.push(`Kisa vadeli hedef <b>${{f2(r.shortTarget)}}</b> (${{pct(r.shortUpside)}}, `
-           + `1-3 ay, yontem: ${{r.shortMethod}})`);
+           + `1-3 ay, yontem: ${{r.shortMethod}})`
+           + band(r.shortRange, r.shortSpreadPct, r.shortConfidence));
   }}
   if (r.longTarget != null) {{
-    out.push(`Uzun vadeli hedef <b>${{f2(r.longTarget)}}</b> (${{pct(r.longUpside)}}, 12 ay)`);
+    out.push(`Uzun vadeli hedef <b>${{f2(r.longTarget)}}</b> (${{pct(r.longUpside)}}, 12 ay)`
+           + band(r.longRange, r.longSpreadPct, r.longConfidence));
   }}
+
+  /* Islem maliyeti: kucuk sirkette makas hedefin ucte birini yiyebiliyor.
+     Brut hedef gostermek, olmayan bir getiriyi vaat etmek demek. */
+  const c = r.costs || {{}};
+  if (c.available) {{
+    let line = `Tahmini islem maliyeti <b>%${{f1(c.round_trip_pct)}}</b> gidis-donus `
+             + `(makas ~%${{f1(c.spread_pct)}}, etki ~%${{f1(c.impact_pct)}})`;
+    if (r.shortNetUpside != null) {{
+      line += ` &rarr; kisa vadeli hedef net <b>${{pct(r.shortNetUpside)}}</b>`;
+    }}
+    if (r.shortCostHeavy) {{
+      line += `<br><span style="opacity:.8">Maliyet, beklenen hareketin ucte `
+            + `birinden fazlasini yiyor.</span>`;
+    }}
+    out.push(line);
+  }}
+
+  /* 21 gunluk ufukta getiriyi en cok belirleyen tek olay. Ceza olarak vardi
+     ama TARIHI gorunmuyordu. */
+  const e = r.earnings || {{}};
+  if (e.available && e.days != null) {{
+    out.push(`Bilanco <b>${{e.date}}</b> &mdash; ${{e.days}} gun kaldi. ${{e.note_tr || ''}}`);
+  }}
+
   if (!out.length) return '';
   return `<div style="color:var(--ink-3);margin-top:8px;line-height:1.7">`
        + out.join('<br>') + `</div>`;

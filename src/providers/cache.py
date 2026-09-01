@@ -53,6 +53,42 @@ def get_or_fetch(namespace: str, ident: str, fetch: Callable[[], Any],
     return value
 
 
+def peek(namespace: str, ident: str) -> tuple[Any, float] | None:
+    """Onbellekteki kaydi YASINDAN BAGIMSIZ dondurur: (deger, yas_saniye).
+
+    get_or_fetch tazelik esigini gecmeyen kaydi yok sayar. Ama bazi veriler
+    icin bayat kayit, HIC KAYIT OLMAMASINDAN cok daha iyidir: borsa kotasyon
+    listesi gunluk birkac sembol degisir, dunun listesi bugun de calisir.
+    api.nasdaq.com erisilemedigi bir gunde bu fonksiyon olmadigi icin evren
+    bos donuyor ve tarama, kullanicinin izleme listesindeki 4 hisseye
+    cokuyordu (pano da o 4 hisseyle yeniden yaziliyordu).
+
+    Doner: (deger, yas) veya kayit yoksa None.
+    """
+    path = _key(namespace, ident)
+    if not path.exists():
+        return None
+    try:
+        age = time.time() - path.stat().st_mtime
+        with path.open("rb") as fh:
+            return pickle.load(fh), age
+    except Exception:
+        return None
+
+
+def put(namespace: str, ident: str, value: Any) -> None:
+    """Onbellege dogrudan yazar (peek ile birlikte kullanilir)."""
+    if value is None:
+        return
+    path = _key(namespace, ident)
+    try:
+        path.parent.mkdir(parents=True, exist_ok=True)
+        with path.open("wb") as fh:
+            pickle.dump(value, fh)
+    except Exception:
+        pass
+
+
 def clear(namespace: str | None = None) -> int:
     root = CACHE_DIR / namespace if namespace else CACHE_DIR
     if not root.exists():

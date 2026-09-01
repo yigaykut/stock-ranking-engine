@@ -408,7 +408,7 @@ function answer(q) {
       '<tr><td>kirilim kurulumu en iyi</td><td>parametreye gore siralama</td></tr>' +
       '<tr><td>teknoloji hisseleri</td><td>sektore gore</td></tr>' +
       '<tr><td>50 dolar alti</td><td>fiyata gore</td></tr>' +
-      '<tr><td>LQDT vs PRG</td><td>karsilastirma</td></tr>' +
+      '<tr><td>LQDT vs PRG</td><td>karsilastirma — farki hangi parametre yaratiyor</td></tr>' +
       '<tr><td>40 kurali nedir</td><td>parametre aciklamasi</td></tr>' +
       '<tr><td>kac hisse tarandi</td><td>tarama ozeti</td></tr></table>';
   }
@@ -447,9 +447,61 @@ function answer(q) {
              '</td><td class="num">' + nf(b.categoryScores[c], 0) + '</td></tr>';
       });
       h += '</table>';
+
+      /* --- FARKI YARATAN PARAMETRELER ---
+         "Hangisi onde" sorusunun cevabi tek basina bir sayidir ve hicbir sey
+         ogretmez. Asil soru "NEDEN onde": farki yaratan parametreler
+         katkilarinin farkina gore siralanir. Katki = puan x agirlik, yani
+         zaten toplama giren buyuklugun ta kendisi; bu yuzden asagidaki
+         listenin toplami puan farkini aciklar. */
+      const bmap = {};
+      (b.factors || []).forEach(function (f) { bmap[f.id] = f; });
+      const diffs = (a.factors || []).map(function (fa) {
+        const fb = bmap[fa.id];
+        if (!fb) return null;
+        const ca = fa.contribution || 0, cb = fb.contribution || 0;
+        return { name: fa.name, d: ca - cb, sa: fa.score, sb: fb.score,
+                 ok: fa.available && fb.available };
+      }).filter(function (x) { return x && x.ok && Math.abs(x.d) > 0.05; });
+      diffs.sort(function (x, y) { return Math.abs(y.d) - Math.abs(x.d); });
+
+      if (diffs.length) {
+        h += '<b>Farki yaratan parametreler</b><table><tr><th>Parametre</th>' +
+             '<th>' + a.ticker + '</th><th>' + b.ticker + '</th><th>Katki farki</th></tr>';
+        diffs.slice(0, 6).forEach(function (x) {
+          const lehte = x.d > 0 ? a.ticker : b.ticker;
+          h += '<tr><td>' + x.name + '</td><td class="num">' + nf(x.sa, 0) +
+               '</td><td class="num">' + nf(x.sb, 0) + '</td><td class="num">' +
+               (x.d > 0 ? '+' : '') + nf(x.d, 1) + ' <span class="muted">' +
+               lehte + '</span></td></tr>';
+        });
+        h += '</table>';
+      }
+
+      /* Eksik veri, karsilastirmayi sessizce carpitir: bir hissede olculemeyen
+         parametrenin agirligi digerlerine dagitiliyor. Soylenmezse okuyucu
+         iki sayiyi esit kosullarda sanir. */
+      const covA = Math.round((a.coverage || 0) * 100), covB = Math.round((b.coverage || 0) * 100);
+      if (Math.abs(covA - covB) >= 10) {
+        h += '<b>Dikkat:</b> kapsama farki buyuk (' + a.ticker + ' %' + covA +
+             ', ' + b.ticker + ' %' + covB + '). Daha az verisi olan hissenin ' +
+             'puani notre (50) dogru cekilir; iki puan esit kosullarda uretilmedi. ';
+      }
+      const pa = (a.penaltiesHit || []).length, pb = (b.penaltiesHit || []).length;
+      if (pa || pb) {
+        h += '<b>Ceza:</b> ' + a.ticker + ' ' + pa + ' adet (' + nf(a.penalty, 1) +
+             '), ' + b.ticker + ' ' + pb + ' adet (' + nf(b.penalty, 1) + '). ';
+      }
+
       const win = a.total >= b.total ? a : b;
-      h += 'Toplam puanda <b>' + win.ticker + '</b> onde (' +
-           nf(Math.abs(a.total - b.total), 1) + ' puan fark).';
+      const gap = Math.abs(a.total - b.total);
+      /* Fark gunluk gurultunun altindaysa "onde" demek yaniltici olur (bulgu K2). */
+      const noise = (DATA.noise && DATA.noise.median_abs_change) || 0;
+      h += 'Toplam puanda <b>' + win.ticker + '</b> onde (' + nf(gap, 1) + ' puan fark).';
+      if (noise && gap < noise) {
+        h += ' Ancak bu fark gunluk tipik oynamanin (&plusmn;' + nf(noise, 1) +
+             ') altinda: <b>ikisi ayirt edilemez</b> kabul edilmeli.';
+      }
       return h;
     }
   }
