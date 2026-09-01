@@ -294,9 +294,25 @@ A Windows scheduled task called `HisseSiralama_Gunluk` runs `scripts/gunluk.bat`
 at 07:00 every day. US markets close at 23:00 local time, so the data has
 settled by then.
 
-The task is set to run when the machine next wakes if it was off, and it won't
-start a second copy on top of a running one. Logs go to `logs/`, 30 days
+The first version of this had one trigger at 07:00 and `StartWhenAvailable` set,
+which sounds like enough. It isn't: two runs were missed on days the machine
+happened to be off at 07:00 and the catch-up never fired. Now there are eight
+triggers a day — 07:00 repeating every two hours until 21:00 — plus one three
+minutes after you log in.
+
+That would be eight full scans a day, so the batch file makes itself idempotent.
+A successful run writes the date into `logs/son_basari.txt`, and any later run
+that same day exits immediately. Seven of the eight triggers cost nothing; the
+one that matters is whichever fires first after the machine comes on. Force a
+rerun with `gunluk.bat force`.
+
+The task won't start a second copy on top of a running one, and it retries three
+times at 15-minute intervals if the script fails. Logs go to `logs/`, 30 days
 retained.
+
+```bash
+python scripts/durum.py      # is it running, where's the counter, is there a model
+```
 
 ```powershell
 Get-ScheduledTaskInfo -TaskName "HisseSiralama_Gunluk"    # status
@@ -304,6 +320,12 @@ Start-ScheduledTask   -TaskName "HisseSiralama_Gunluk"    # run now
 Disable-ScheduledTask -TaskName "HisseSiralama_Gunluk"    # pause
 Unregister-ScheduledTask -TaskName "HisseSiralama_Gunluk" -Confirm:$false
 ```
+
+The dashboard used to show one fewer snapshot than it had, every single day —
+the page was written before the day's snapshot was saved, so it always reported
+yesterday's count. Watching a counter that never seems to move is a good way to
+conclude the automation is broken when it isn't. The snapshot is now saved
+first, and the banner also gives the date the counter is expected to fill.
 
 The one requirement is that the computer is on.
 
@@ -430,13 +452,14 @@ positive results in 60% of them, and it has to beat a plain ridge regression by
 0.005 IC. That last one matters: a neural net that only matches ridge is more
 overfitting risk and less transparency for nothing.
 
-### Three models
+### Four models
 
 - **RidgeRanker** — closed-form, numpy only. The baseline. Nothing gets used
   unless it beats this.
 - **MLPRanker** — catches non-linear interactions, like "cheapness only helps
   when the trend is intact".
 - **SeqRanker** — a GRU over each stock's last 10 days of parameter history.
+- **AttnRanker** — attention across the whole cross-section of one day.
 
 The sequence model is where deep learning actually earns its place here.
 Cross-sectional models see what a stock looks like today. This one sees how it
@@ -444,6 +467,39 @@ got there — whether the score rose into this level or fell into it.
 
 That claim is tested. On synthetic data where the signal lives *only* in the
 change, the cross-sectional model scores IC 0.308 and the sequence model 0.757.
+
+Until recently the GRU could be measured but never used: live prediction bailed
+out on any sequence model, because a single day's row is not a sequence. It now
+builds the window out of the feature store — the previous snapshots for that
+ticker, followed by today's row — with the same ordering as training, percentile
+first and windowing second. Get that order wrong and the model quietly sees
+something other than what it learned on.
+
+The attention model attacks a different gap. The other three score each stock
+on its own; the only thing making them cross-sectional is the loss function.
+But ranking is relative by nature. Momentum of 8% means one thing on a day when
+everything else sits at 2% and something else entirely when the field is at
+20%. AttnRanker takes a day's stocks as a set and updates each stock's
+representation by attending over the others in the same day, so the comparison
+lives in the architecture rather than being applied afterwards by
+normalization.
+
+There is no positional encoding, and that is the interesting part. A day's
+stocks are an unordered set, so permuting the input has to permute the output
+and change nothing else. The test checks it directly and the deviation comes
+out at 4.8e-07. Adding positional encoding would break that test, which is
+exactly why the test is there — it pins down a design decision that would
+otherwise be invisible.
+
+Attention costs O(n²) in the size of the day. Training splits each day into
+chunks of at most 256 stocks, which bounds the cost and doubles as
+regularization, since every chunk is a random subset of that day's
+cross-section. Inference runs the day whole.
+
+A stock with too little history gets no prediction rather than a window padded
+out with repeats of one row. It drops out of that parameter and the coverage
+machinery handles the rest, which is the honest outcome: no opinion is better
+than a fabricated one.
 
 ### Leakage prevention
 
@@ -455,25 +511,71 @@ Splits purge `horizon + embargo` days backward from each test window. The tests
 verify that training and test dates never intersect and that the gap is at least
 that wide.
 
+### Getting off the ground without waiting four months
+
+The feature store grows one snapshot a day and the gate wants 60 of them over
+120 days. Starting from zero that's four months before you can even find out
+whether the GRU is worth having.
+
+But the cache already holds two years of daily bars for every stock. Price-based
+factors can be recomputed for any past day — slice the series at that date and
+call the same function. `python run.py history` does that across the cached
+universe and produces roughly a year of historical snapshots in about an hour.
+
+It calls `factors.f_*` on a truncated DataFrame rather than reimplementing the
+formulas in vectorised form. Vectorised would be maybe fifty times faster, but
+it would also mean training features and live features could drift apart without
+anyone noticing.
+
+An hour-long job that loses everything when interrupted is a bad job. Results
+are written to disk every 150 symbols along with the list of what's been
+processed, so a killed run resumes where it stopped. `--restart` starts over,
+and `--merge-only` turns whatever batches exist into a usable panel without
+waiting for the rest — you can train on 300 stocks while the other 3,000 are
+still being computed.
+
+Labelling reads from cache first. It used to call the normal fetch path, whose
+six-hour TTL meant a few hundred symbols turned into a few hundred network
+requests; one training run sat waiting on the network for minutes before doing
+any arithmetic. Forward returns come from price history that is already on disk,
+so the network is now a fallback for symbols with no cache entry at all.
+
+Only the eleven price and volume factors are backfilled. Fundamentals, analyst
+ratings, EPS revisions, short interest and ownership come from Yahoo as they
+stand today, with no history. Writing today's known profitability onto a day
+twelve months ago is textbook look-ahead, so those factors are simply absent.
+
+Two biases remain and neither is fixable here. The cached universe is today's
+listings, so companies that collapsed and got delisted are missing — measured
+skill on this panel is higher than what you'd have earned. And rotation means the
+cache is the most recently scanned slice, not a random sample.
+
+So this panel cannot promote a champion. `promotion_check` refuses any result
+carrying the `pretrain` flag no matter how good the numbers look, the pretrained
+model is saved to a separate file, and the two stores never merge. It's for
+choosing an architecture. The decision to let a model touch the score still waits
+for real forward snapshots.
+
 ### What state it's in
 
 ```
-snapshots : 2 / 60      span : 1 / 120 days      progress : 0.8%
+live snapshots : 2 / 60      span : 1 / 120 days      progress : 0.8%
 ready to train : no
 ```
 
-Training is blocked until there's enough data, and that's deliberate. A model
-trained on a few days produces confident-looking numbers fitted entirely to
-noise, and you find out it's wrong after losing money.
-
-The pipeline's correctness was verified today with synthetic data instead:
+Training on live data is blocked until there's enough of it, and that's
+deliberate. A model trained on a few days produces confident-looking numbers
+fitted entirely to noise, and you find out it's wrong after losing money.
 
 ```bash
-python tests/test_ml.py     # 22 tests
+python tests/test_ml.py         # 29 — pipeline correctness, synthetic data
+python tests/test_backfill.py   # 34 — historical panel, leakage, bias brake, resume
 ```
 
-The one that matters most: on data with no signal at all, the model finds
-IC 0.001. If it were overfitting, it would find something there too.
+The two that matter most: on data with no signal at all the model finds IC 0.001,
+so it isn't overfitting; and tripling every price bar after a snapshot's date
+changes nothing about that snapshot, so the historical panel isn't reading the
+future.
 
 More detail: **[docs/OGRENME.md](docs/OGRENME.md)** (Turkish)
 
@@ -511,7 +613,12 @@ bands and a ± range instead of leaning on exact rank.
 
 ```bash
 python tests/test_scoring.py      # 21 — scoring engine
-python tests/test_ml.py           # 22 — learning pipeline, synthetic
+python tests/test_ml.py           # 29 — learning pipeline, synthetic
+python tests/test_backfill.py     # 34 — historical panel, leakage, bias brake, resume
+python tests/test_evren.py        # 17 — universe collapse, stale-cache recovery
+python tests/test_topluluk.py     # 12 — ensemble blending and alignment
+python tests/test_otomasyon.py    #  9 — daily stage isolation
+python tests/test_kodlama.py      #  5 — source encoding guard
 node   tests/test_dashboard.js    # 28 — dashboard UI, real DOM
 ```
 
@@ -543,12 +650,23 @@ src/
   targets.py            price targets, stops, sell signals
   watchlist.py          position tracking
   dataset.py            training panel, leak-free splits, readiness gate
-  models.py             RidgeRanker, MLPRanker, SeqRanker
-  training.py           walk-forward training, evaluation, promotion
+  backfill.py           historical snapshots rebuilt from cached price bars
+  models.py             RidgeRanker, MLPRanker, SeqRanker, AttnRanker
+  training.py           walk-forward training, evaluation, ensemble, promotion
+  paper.py              cohort ledger — what the top 20 actually did
+  fundamentals.py       daily point-in-time fundamentals archive
+  delisting.py          survivorship-bias ledger
+  regime.py             market regime: trend, breadth, volatility
+  notify.py             alerts — file, desktop, optional Telegram
+  backup.py             encrypted archive of the irreplaceable data
   publish.py            AES-256-GCM encryption
   deploy.py             GitHub Pages with leak protection
   report.py             dashboard HTML
   theme.py              visual identity, parametric curves
+  providers/
+    yahoo.py            primary source
+    nasdaq.py           fallback price source, listings
+    cache.py            disk cache with stale-read support
 ```
 
 The dashboard interface is Turkish. Some Turkish docs stay local because
@@ -575,11 +693,197 @@ same sell-side data Yahoo exposes through an API.
 ## Known limits
 
 - Yahoo's endpoint is unofficial and rate-limited. Wide scans spread across
-  several runs.
+  several runs. There's a fallback price source, but it only covers prices.
 - Fundamentals arrive with a quarterly lag. Restatements aren't tracked.
+- Fundamental history only starts from the day the archive was switched on.
+  Anything before that is gone for good — Yahoo won't serve it.
 - WSB data is a snapshot with no history, so acceleration is limited to a 24-hour
   window.
 - The system ranks cross-sectionally — which stock looks better than which
-  today. It says nothing about whether today is a good day to buy.
-- Commissions, spreads, slippage and taxes aren't modeled.
+  today. The regime banner gives context, but nothing here times the market.
+- Spreads and slippage are *estimated* from liquidity, not measured. Taxes
+  aren't modeled at all.
 - US equities only.
+
+---
+
+## The scorecard
+
+Ranking quality was invisible for a long time. IC measurement needs 60
+snapshots, which won't arrive until December. But "what happened to the top 20"
+can be answered from price data that's already on disk.
+
+Every scan writes its top 20 into a ledger as a **cohort**. Each cohort is held
+21 trading days and marked against SPY. It isn't a portfolio simulation —
+capital, position sizing and cash management are deliberately absent, because
+none of those measure the thing being tested. 73 cohorts are 73 independent
+measurements of the ranking itself.
+
+```bash
+python run.py paper build --panel   # fill the ledger, including history
+python run.py paper                 # show the scorecard
+```
+
+The first run over 11 months of reconstructed history:
+
+| | Top 20, 21-day hold |
+|---|---:|
+| Cohorts | 73 |
+| Mean return | +1.81% |
+| SPY over the same windows | +1.53% |
+| **Excess** | **+0.29%** |
+| Hit rate | 55.6% |
+| t-statistic (per cohort) | 0.67 |
+
+t = 0.67 means the excess is **indistinguishable from noise**. And this is the
+optimistic reading: the historical panel carries survivorship bias, uses only
+the 11 price-derived parameters, and applies no penalties. It's an upper bound,
+not a result.
+
+The dashboard shows both tracks — real scans and reconstructed history — with
+that warning attached to the second one.
+
+---
+
+## Do the parameters work?
+
+Same question, one level down. Information Coefficient is the rank correlation
+between a parameter's score and the stock's forward return. Over 73 dates:
+
+| Parameter | IC | Reading |
+|---|---:|---|
+| momentum_persistence | +0.0262 | best of the set, still noise |
+| stage2_breakout | +0.0174 | noise |
+| trend_structure | +0.0157 | noise |
+| nominal_price_fit | −0.0173 | wrong direction |
+| breakout_setup | −0.0234 | wrong direction |
+
+The convention is |IC| > 0.03 for "weak but usable". Nothing clears it. Two
+parameters point the wrong way — `breakout_setup` is one of the four heaviest
+in the config and appears to be actively unhelpful over this window.
+
+This table is now on the dashboard. Nothing is auto-adjusted from it: the
+measurement is a suggestion, changing weights is the user's call.
+
+```bash
+python run.py learn --pretrain      # measure against reconstructed history
+python run.py learn                 # measure against real snapshots
+```
+
+---
+
+## Everything else that got added
+
+**Fundamentals archive.** Yahoo only serves *today's* fundamentals. Every scan
+was computing them, using them, and throwing them away — which is why the
+reconstructed panel could only carry 11 price parameters. They're now stored
+daily (`data/fundamentals/`, gzipped, ~90 KB/day). In six months there'll be
+enough history to train on all 28.
+
+**Delisting ledger.** Companies that disappear are tracked against the *full*
+listings feed, not the market-cap-filtered universe — a company crossing the
+$20B ceiling also leaves the universe, and counting that as a delisting would
+invert the bias instead of fixing it. Confirmed after 5 missing days; the last
+known price is captured on the first missing day, while it's still in cache.
+Positions in delisted names close at that price rather than silently vanishing.
+
+**Fallback price source.** Yahoo was returning 55% of requested symbols. Failed
+symbols are now retried against Nasdaq's historical endpoint, keeping cached
+Yahoo fundamentals and swapping in the fresh price series. The series is
+unadjusted, so anything with a split-sized jump in it gets rejected rather than
+silently mis-scored. (Stooq was the first candidate — it now sits behind a
+JavaScript bot check, so it's out.)
+
+First production run with it, after the circuit breaker had already fired:
+
+```
+DURDURULDU: Yahoo hiz siniri uyguluyor (25 ardisik ret).
+yedek kaynak deneniyor: 272 sembol
+yedek kaynaktan kurtarilan: 193 hisse
+721/800 basarili (%90; Yahoo %66 + yedek 193)
+```
+
+55% → 90%. The two rates are reported separately on purpose: blending them into
+one number would hide how the primary source is actually doing. The retry list
+is capped at 300 symbols — burning the second source to save the first is a bad
+trade.
+
+**Fetch prioritisation.** The daily budget of ~800 symbols used to go strictly
+to the stalest names. It now goes to the watchlist first, then the previous
+scan's top decile, then staleness. A stale price on the 1,900th-ranked stock
+changes nobody's decision; a stale price in the top 20 makes the list wrong.
+
+**Market regime.** A one-line banner: index versus its 50 and 200-day averages,
+breadth (share of scanned stocks above their own 50-day), and realised
+volatility against its own year. It changes no score. It exists because a
+momentum-weighted ranking behaves very differently in a downtrend, and because
+IC can only be measured per regime if the regime was recorded on the day.
+
+**Targets as ranges.** The methods behind each target were already computed and
+then collapsed into one number. The spread between them *is* the uncertainty, so
+it's now shown: low/high, spread percentage, and a confidence label. Anything
+above 25% spread is labelled "read the range, not the target".
+
+**Transaction costs.** Spread estimated from dollar volume and tick size,
+market impact from assumed participation. A $3 stock trading $1M/day comes out
+around 4.8% round trip — which turns an "8% target" into 3%. Targets now carry a
+net figure alongside the gross one, and flag when cost eats a third of the move.
+
+**Earnings countdown.** Already existed as a −0.20σ penalty; the date itself was
+invisible. It's the single biggest driver of a 21-day return, so it's on the
+card now.
+
+**Model ensemble.** Champion-take-all threw away the other two models. The
+ensemble averages the members' *within-day percentile ranks* — raw predictions
+can't be blended when one model outputs on a different scale. Members are
+aligned by (date, ticker) because the sequence model drops rows that lack
+enough history. On synthetic data with two independent weak predictors, the
+blend beats both members.
+
+**Multiple horizons.** `--horizons 5,21,63` trains each separately. Three times
+the evidence from the same data, and the shape across horizons says what kind of
+signal it is: strong short and weak long is a momentum effect; the reverse is a
+valuation effect.
+
+**Raw series features.** The models could only see the 28 human-designed scores,
+which caps them at human hypotheses. 20 raw quantities now go into the feature
+store — returns at seven lags, realised volatility, volume ratios, distance from
+moving averages in ATR units, drawdown, skew. They are not parameters: no
+weight, no dashboard presence, training only.
+
+**Notifications.** A broken stop can't wait to be noticed. Alerts go to a file
+and a local desktop notification; Telegram too, if `TELEGRAM_BOT_TOKEN` and
+`TELEGRAM_CHAT_ID` happen to be set in the environment. Repeats are suppressed
+for 5 days.
+
+**Encrypted backup.** `data/feature_store` cannot be regenerated — Yahoo won't
+serve yesterday's fundamentals. OneDrive syncs it, but sync isn't backup: a
+silent corruption propagates to every copy instantly. `python run.py backup`
+freezes it into an AES-256-GCM archive, same crypto as the dashboard. Restore
+writes to a separate directory by default, because an untested backup isn't a
+backup. The daily job takes one automatically if a week has passed.
+
+**Health panel.** What `scripts/durum.py` prints, on the site itself: last run,
+fetch rate, fallback usage, universe coverage, archive size, delisting counts.
+
+---
+
+## Two failures worth documenting
+
+**One character stopped the automation for three days.** A U+FFFD left behind by
+an encoding repair sat inside a cosmetic `print` in the learning step. The scan
+completed fine — 2,390 stocks scored, dashboard written — then that line raised
+`UnicodeEncodeError` on a cp1254 console, the process exited 1, the day never
+got marked, and all eight triggers re-ran the same scan. Two fixes: console
+output is pinned to UTF-8, and daily stages are isolated so a non-essential
+step can't void a successful one. `tests/test_kodlama.py` fails the build if
+that character ever reappears.
+
+**A network error emptied the site.** `api.nasdaq.com` was unreachable one
+evening. The listings fetch was uncached and returned an empty list on failure,
+so the universe collapsed to the 4 watchlist symbols — and the scan reported
+success, wrote a 4-stock ranking over the dashboard, and published it. Three
+separate holes, all closed: listings are cached and fall back to a stale copy;
+a collapsed universe recovers from yesterday's recorded universe or aborts; and
+a scan that scores far fewer stocks than the previous one refuses to overwrite
+the dashboard at all.
