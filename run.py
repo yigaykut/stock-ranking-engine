@@ -37,10 +37,36 @@ import yaml
 ROOT = Path(__file__).resolve().parent
 sys.path.insert(0, str(ROOT))
 
-from src import factors, ml, report, scoring, universe          # noqa: E402
+
+def _force_utf8_console() -> None:
+    """Konsol cikisini UTF-8'e sabitler.
+
+    Windows'ta varsayilan konsol kod sayfasi cp1254 (Turkce). ASCII disi TEK bir
+    karakter iceren print, tum sureci UnicodeEncodeError ile dusuruyordu:
+    15-17 Agustos'ta gunluk is tam da bunun yuzunden her calismada 1 dondu, gun
+    isaretlenmedi ve 8 tetigin hepsi ayni taramayi bastan yapti. Yani bir SUS
+    KARAKTERI, otomasyonun tamamini bozdu. Kod tarafinda ayrica ASCII disi
+    karakter testi var (tests/test_kodlama.py), ama bu satir ikinci savunmadir:
+    metin ne olursa olsun surec dusmez.
+    """
+    for stream in (sys.stdout, sys.stderr):
+        try:
+            stream.reconfigure(encoding="utf-8", errors="replace")
+        except (AttributeError, ValueError, OSError):
+            pass
+
+
+_force_utf8_console()
+
+from src import factors, ml, report, scanlog, scoring, universe  # noqa: E402
 from src.providers import cache, reddit_wsb, yahoo              # noqa: E402
 
 OUT = ROOT / "output"
+
+# Yedek fiyat kaynagina bir turda gonderilecek azami istek. Sinir olmasaydi
+# devre kesici sonrasi 450+ istek gidebilirdi; ikinci kaynagi da yakmak,
+# birincisini kaybetmekten daha kotu bir durum yaratir.
+FALLBACK_LIMIT = 300
 
 
 # ---------------------------------------------------------------- yardimcilar
@@ -134,6 +160,80 @@ def fetch_one(ticker: str, period: str, use_cache: bool):
 
 
 # ------------------------------------------------------------------- komutlar
+def _previous_snapshot_rows() -> int:
+    """BUGUNDEN ONCEKI en son anlik goruntunun satir sayisi (yoksa 0)."""
+    today = datetime.now(timezone.utc).strftime("%Y-%m-%d")
+    files = sorted(p for p in ml.FEATURE_STORE.glob("snapshot_*.csv")
+                   if p.stem[len("snapshot_"):][:10] < today)
+    if not files:
+        return 0
+    try:
+        with files[-1].open(encoding="utf-8") as fh:
+            return max(0, sum(1 for _ in fh) - 1)
+    except OSError:
+        return 0
+
+
+def _previous_top(n: int) -> set[str]:
+    """Onceki taramanin ilk N sembolu (cekim onceligi icin)."""
+    prev, _ = ml.previous_snapshot()
+    if prev is None or "total_score" not in prev.columns:
+        return set()
+    top = (prev.sort_values("total_score", ascending=False, na_position="last")
+               .head(n))
+    return set(top["ticker"].astype(str))
+
+
+def guard_universe(tickers: list[str], breakdown: dict, sources: list[str],
+                   args: argparse.Namespace) -> tuple[list[str], dict]:
+    """Coken evreni tespit eder ve mumkunse kurtarir.
+
+    OLAY: 16 Agustos'ta api.nasdaq.com erisilemedi. Kotasyon kaynagi sessizce
+    bos liste dondu, evren kullanicinin izleme listesindeki 4 hisseye cokta ve
+    tarama BASARIYLA tamamlandi -- 4 hisselik bir siralama uretip panonun
+    uzerine yazdi. Sitede haftalardir birikmis siralama gitti, yerine "sadece
+    benim ekledigim hisseler" kaldi.
+
+    Sessiz cokusun uc ayagi vardi ve ucu de burada kapatiliyor:
+      1. Bos kaynak hata sayilmiyordu      -> asagidaki esik kontrolu
+      2. Bayat onbellek kullanilmiyordu    -> universe.us_listings
+      3. Cokmus tarama panoyu eziyordu     -> kurtarilamazsa iptal
+
+    Doner: (semboller, bilgi). bilgi["abort"] True ise cagiran taraf DURMALI.
+    """
+    info: dict = {"abort": False, "recovered": False, "reason": None}
+
+    # Kucuk evren BEKLENEN durumlarda kontrol calismaz: elle sembol dosyasi,
+    # --limit ile kucultulmus deneme taramasi, tek endeks.
+    expects_large = any(s.strip().lower() in universe.PRESETS for s in sources)
+    if not expects_large or args.limit:
+        return tickers, info
+
+    listings = breakdown.get("_listings") or {}
+    threshold = max(scanlog.MIN_SANE_UNIVERSE, 0)
+    if len(tickers) >= threshold and listings.get("ok", True):
+        return tickers, info
+
+    print(f"\n      UYARI: evren cokmus gorunuyor ({len(tickers)} sembol). "
+          f"Kotasyon kaynagi: {listings.get('source', 'bilinmiyor')}")
+
+    rescue, day = scanlog.last_universe()
+    if rescue:
+        info.update(recovered=True, reason="kotasyon kaynagi erisilemedi",
+                    recovered_from=day, recovered_count=len(rescue))
+        print(f"      KURTARMA: {day} tarihli evren kaydi kullaniliyor "
+              f"({len(rescue)} sembol). Fiyat verisi onbellekten gelecek.")
+        return rescue, info
+
+    info.update(abort=True, reason="evren cokmus, kurtarma kaydi da yok")
+    print("\nHATA: evren olusturulamadi ve kurtarilacak gecmis kayit da yok.\n"
+          "      Tarama IPTAL edildi - eksik bir siralama panonun uzerine\n"
+          "      yazilmasin diye. Kaynak erisilebilir olunca tekrar dene.",
+          file=sys.stderr)
+    write_status(ok=False, error="evren cokmus (kotasyon kaynagi erisilemedi)")
+    return tickers, info
+
+
 def cmd_scan(args: argparse.Namespace) -> int:
     cfg = load_config(Path(args.config))
     t0 = time.time()
@@ -145,10 +245,21 @@ def cmd_scan(args: argparse.Namespace) -> int:
                                         symbols_file=args.symbols_file, limit=args.limit,
                                         min_mcap=args.min_mcap, max_mcap=args.max_mcap)
 
+    lst = breakdown.pop("_listings", None)
+    if lst and lst.get("source") in ("onbellek", "bayat_onbellek"):
+        print(f"      kotasyon listesi onbellekten ({lst['count']} sembol, "
+              f"{lst['age_hours']} saat once)")
+
+    tickers, uni_guard = guard_universe(tickers, dict(breakdown, _listings=lst),
+                                        sources, args)
+    if uni_guard["abort"]:
+        return 1
+    if uni_guard["recovered"]:
+        breakdown["kurtarilan_evren"] = uni_guard["recovered_count"]
+
     # --- Izleme listesi HER ZAMAN evrene dahil ---------------------------------
     # Liste gunluk yenilenir ve siralama degisir; ama kullanicinin sectigi
     # hisseler evrenden dusse bile taranmaya ve gosterilmeye devam eder.
-    from src import scanlog
     from src import watchlist as _wl
     pinned = {p["ticker"] for p in _wl.load()}
     if pinned:
@@ -160,7 +271,22 @@ def cmd_scan(args: argparse.Namespace) -> int:
             print(f"      izleme listesinden eklenen: {len(added)} ({', '.join(added[:8])}"
                   f"{'...' if len(added) > 8 else ''})")
 
-    # --- Kote disi tespiti icin gunluk evren kaydi (bulgu Y3) -----------------
+    # --- Kote disi takibi (bulgu Y3) -----------------------------------------
+    # DIKKAT: kontrol, band suzgecinden gecmis evrene degil kotasyon
+    # beslemesinin TAMAMINA karsi yapilir. Piyasa degeri 20 milyar dolari asan
+    # bir sirket de evrenden duser -- ama o batmadi, tam tersi oldu. Ikisi
+    # karistirilirsa yanlilik duzelmez, tersine cevrilir.
+    try:
+        from src import delisting as _dl
+        if any(s.strip().lower() in universe.PRESETS for s in sources):
+            all_rows, _ = universe.us_listings()
+            dl_info = _dl.update({s for s, _ in all_rows})
+            if dl_info.get("ok") and dl_info["newly_confirmed"]:
+                print(f"      KOTE DISI kesinlesti: "
+                      f"{', '.join(dl_info['newly_confirmed'][:8])}")
+    except Exception as exc:
+        print(f"      UYARI: kote disi takibi guncellenemedi ({exc})")
+
     uni_info = scanlog.record_universe(tickers)
     if uni_info["disappeared_count"]:
         print(f"      {uni_info['disappeared_count']} sembol {uni_info['compared_to']} "
@@ -173,7 +299,10 @@ def cmd_scan(args: argparse.Namespace) -> int:
     cov = scanlog.coverage_stats(tickers)
     universe_all = list(tickers)              # batch kesiminden ONCEKI tam evren
     universe_full = len(tickers)
-    tickers = scanlog.order_by_staleness(tickers, pinned)
+    # Onceki taramanin ust dilimi: butcenin ilk sirasi bunlarin (bkz.
+    # order_by_staleness). Karar bu isimler uzerinden veriliyor, taze olmalilar.
+    priority = _previous_top(max(args.top, 40) * 3)
+    tickers = scanlog.order_by_staleness(tickers, pinned, priority)
     batched = False
     if args.batch:
         keep = max(len(pinned), int(args.batch))
@@ -217,6 +346,7 @@ def cmd_scan(args: argparse.Namespace) -> int:
     done = 0
 
     no_data: list[str] = []
+    failed: list[str] = []          # yedek kaynakta denenecekler
     rate_limited = 0
     aborted = False
 
@@ -245,14 +375,61 @@ def cmd_scan(args: argparse.Namespace) -> int:
 
             if "_error" in bundle:
                 errors.append(f"{tk}: {bundle['_error']}")
+                failed.append(tk)
             elif bundle.get("history") is None:
                 # Cekim istisna atmadi ama fiyat serisi gelmedi. Bunu "yetersiz
                 # gecmis" saymak yaniltici olur — cogunlukla hiz siniridir.
                 no_data.append(tk)
+                failed.append(tk)
             else:
                 bundles[tk] = bundle
             if done % 25 == 0 or done == len(tickers):
                 print(f"      {done}/{len(tickers)}", end="\r", flush=True)
+
+    # --- 4b) YEDEK FIYAT KAYNAGI ---------------------------------------------
+    # Yahoo'nun basarisiz oldugu sembollerde fiyat tarafi kurtarilir. Yalnizca
+    # BASARISIZLARDA denenir: butce boylece kendiliginden sinirli kalir
+    # (~360 istek) ve saglam cekimler ikinci kez sorgulanmaz.
+    #
+    # Temel veri Yahoo onbelleginden korunur; yalnizca fiyat serisi tazelenir.
+    # Ayrintili gerekce ve duzeltilmemis seri uyarisi: src/providers/nasdaq.py
+    # Yahoo'nun kendi basari orani, yedek kaynaktan ONCE olculur: aksi halde
+    # oran sisirilir ve gercek kaynak sagligini gizler.
+    yahoo_ok = len(bundles)
+
+    # Devre kesici devreye girdiginde kalan istekler IPTAL edilir; bu semboller
+    # hic denenmedigi icin `failed` listesine de girmez. Oysa yedek kaynaga en
+    # cok ihtiyac duyulan an tam olarak budur. Ilk gercek calismada bu yuzden
+    # yedek kaynak hic devreye girmedi (446 sembol iptal, `failed` bos).
+    fallback_used = 0
+    cand: list[str] = []
+    if not args.no_fallback:
+        pool = tickers if aborted else failed
+        cand = [t for t in pool if t not in bundles][:FALLBACK_LIMIT]
+
+    if cand:
+        from src.providers import nasdaq as _nq
+        print(f"      yedek kaynak deneniyor: {len(cand)} sembol "
+              f"(fiyat serisi; temel veri onbellekten)")
+
+        def _fb(tk: str):
+            base = yahoo.fetch_cached(tk, period=args.period,
+                                      max_age_seconds=30 * 24 * 3600)
+            try:
+                return tk, _nq.as_bundle(tk, args.period, base)
+            except Exception:
+                return tk, None
+
+        with ThreadPoolExecutor(max_workers=max(2, args.workers)) as pool:
+            for fut in as_completed([pool.submit(_fb, t) for t in cand]):
+                try:
+                    tk, b = fut.result()
+                except Exception:
+                    continue
+                if b is not None:
+                    bundles[tk] = b
+                    fallback_used += 1
+        print(f"      yedek kaynaktan kurtarilan: {fallback_used} hisse")
 
     # Basarili cekimleri kaydet -> bir sonraki tur bunlari sona atar
     if bundles:
@@ -262,26 +439,68 @@ def cmd_scan(args: argparse.Namespace) -> int:
     # onbellekten gelenler oranı sisirir ve %100'u asar.
     fetched_live = len(bundles)
     ok_rate = 100.0 * fetched_live / max(1, len(tickers))
+    yahoo_rate = 100.0 * yahoo_ok / max(1, len(tickers))
 
     # --- Onbellekten geri doldurma -------------------------------------------
     # Donusumlu tarama bu turda evrenin bir dilimini cekti. Daha once cekilmis
     # hisseleri de skorlamaya katiyoruz: ag maliyeti YOK (yalnizca onbellek
     # okumasi) ama siralama her turda evrenin daha buyuk bir kismini kapsar.
     backfilled = 0
+    # Her hissenin verisinin kac gunluk oldugu. Canli cekilenler 0.0.
+    # Bu olmadan pano "bugunun siralamasi" gibi gorunur ama satirlarin bir
+    # kismi haftalik eski fiyattan gelir; asagida sayilip panoya yaziliyor.
+    data_age: dict[str, float] = {tk: 0.0 for tk in bundles}
     if not args.no_backfill:
+        max_age = args.backfill_days * 24 * 3600
         for tk in universe_all:
             if tk in bundles:
                 continue
-            b = yahoo.fetch_cached(tk, period=args.period,
-                                   max_age_seconds=args.backfill_days * 24 * 3600)
+            hit = cache.peek("yahoo", f"{tk}:{args.period}")
+            if hit is None:
+                continue
+            b, age = hit
+            if age > max_age:
+                continue
             if b is not None and b.get("history") is not None:
                 bundles[tk] = b
+                data_age[tk] = age / 86400.0
                 backfilled += 1
         if backfilled:
             print(f"      onbellekten eklendi: {backfilled} hisse "
                   f"(ag istegi yok) -> toplam {len(bundles)} hisse skorlanacak")
 
-    print(f"      {fetched_live}/{len(tickers)} basarili (%{ok_rate:.0f})"
+    # --- Piyasa rejimi -------------------------------------------------------
+    # Skoru DEGISTIRMEZ; siralamanin hangi ortamda uretildigini kaydeder ve
+    # panoda soyler. Rejim etiketi bugun yazilmazsa sonradan uretilemez
+    # (evren ve kapsama degisiyor), bu yuzden her taramada kaydedilir.
+    regime_state = {}
+    try:
+        from src import regime as _rg
+        regime_state = _rg.compute(bench_close, _rg.breadth(bundles))
+        _rg.record(regime_state)
+        print(f"      piyasa rejimi: {regime_state.get('label_tr')}"
+              + (f" · genislik %{regime_state['breadth_pct']}"
+                 if regime_state.get("breadth_pct") is not None else ""))
+    except Exception as exc:
+        print(f"      UYARI: rejim hesaplanamadi ({exc})")
+
+    # --- Temel verinin gunluk arsivi -----------------------------------------
+    # Yahoo gecmise donuk temel veri VERMEZ. Bugun saklanmayan alan, alti ay
+    # sonra hicbir yerden bulunamaz. Bu yuzden arsivleme skorlamadan once ve
+    # kosulsuz yapilir; hatasi taramayi durdurmaz.
+    try:
+        from src import fundamentals as _fund
+        fund_rows = [_fund.extract(tk, b) for tk, b in bundles.items()]
+        fund_path = _fund.save_snapshot(fund_rows)
+        if fund_path:
+            print(f"      temel veri arsivi: {len(fund_rows)} hisse -> "
+                  f"{fund_path.name}")
+    except Exception as exc:
+        print(f"      UYARI: temel veri arsivlenemedi ({exc})")
+
+    print(f"      {fetched_live}/{len(tickers)} basarili (%{ok_rate:.0f}"
+          + (f"; Yahoo %{yahoo_rate:.0f} + yedek {fallback_used}"
+             if fallback_used else "") + ")"
           + (f", {len(no_data)} veri donmedi" if no_data else "")
           + (f", {rate_limited} hiz siniri" if rate_limited else "")
           + (f", {len(errors)} hata" if errors else ""))
@@ -400,7 +619,31 @@ def cmd_scan(args: argparse.Namespace) -> int:
     diag["fetch_no_data"] = len(no_data)
     diag["fetch_rate_limited"] = rate_limited
     diag["fetch_aborted"] = aborted
+
+    # --- Veri tazeligi -------------------------------------------------------
+    # yahoo.fetch_cached'in docstring'i "eskiyen satir bayat isaretlenir" diyordu
+    # ama isaretleme HIC YAZILMAMISTI. Geri doldurma penceresi genisletildigi
+    # icin (5 -> 12 gun) bu sayilar artik panoda gorunmek zorunda: aksi halde
+    # iki haftalik fiyattan uretilmis bir sira "bugunun siralamasi" gibi okunur.
+    scored_ages = [data_age.get(str(t), 0.0) for t in result["ticker"]] \
+        if "ticker" in result else []
+    if scored_ages:
+        ages_sorted = sorted(scored_ages)
+        diag["data_age"] = {
+            "fresh_today": sum(1 for a in scored_ages if a < 1.0),
+            "stale_over_3d": sum(1 for a in scored_ages if a >= 3.0),
+            "stale_over_7d": sum(1 for a in scored_ages if a >= 7.0),
+            "median_days": round(ages_sorted[len(ages_sorted) // 2], 1),
+            "max_days": round(ages_sorted[-1], 1),
+        }
+        d = diag["data_age"]
+        print(f"      veri tazeligi: {d['fresh_today']} hisse bugun cekildi, "
+              f"{d['stale_over_3d']} hisse 3+ gunluk, {d['stale_over_7d']} hisse "
+              f"7+ gunluk (medyan {d['median_days']} gun)")
     diag["fetch_success_rate"] = round(ok_rate / 100, 3)
+    diag["yahoo_success_rate"] = round(yahoo_rate / 100, 3)
+    diag["fallback_used"] = fallback_used
+    diag["regime"] = regime_state
     # Ornekleri kirpiyoruz ama SAYIMLARI tam tutuyoruz — aksi halde evrenin
     # neden daraldigi gorunmez oluyor.
     reason_counts: dict[str, int] = {}
@@ -417,14 +660,53 @@ def cmd_scan(args: argparse.Namespace) -> int:
     for k, v in list(diag["dropped_by_reason"].items())[:6]:
         print(f"    {v:5d}  {k}")
 
+    # --- Cikti guvenligi: yarim bir tarama panonun uzerine yazmasin ----------
+    # Ikinci savunma hatti. guard_universe evren tarafini tutuyor; bu kontrol
+    # ise "evren dogru ama cekim neredeyse tamamen basarisiz" durumunu
+    # yakaliyor. Pano, birikmis en degerli ciktidir; yerine 4 satirlik bir
+    # liste yazmaktansa dunku panoyu birakmak her zaman daha iyidir.
+    prev_rows = _previous_snapshot_rows()
+    if prev_rows >= 200 and len(result) < 0.4 * prev_rows and not args.limit:
+        print(f"\nHATA: bu tarama yalnizca {len(result)} hisse skorladi; onceki "
+              f"tarama {prev_rows} idi.\n"
+              f"      Pano GUNCELLENMEDI - eksik liste, dolu listenin uzerine\n"
+              f"      yazilmaz. Veri kaynagi duzelince tekrar calistir.",
+              file=sys.stderr)
+        write_status(ok=False, detail={"scored": len(result), "previous": prev_rows},
+                     error="tarama cok eksik, pano korundu")
+        return 1
+
     # --- Ciktilar
     OUT.mkdir(parents=True, exist_ok=True)
-    html_path = report.write_html(result, diag, OUT / "dashboard.html", top_n=args.top)
-    csv_path = report.write_csv(result, OUT / "ranking.csv")
 
+    # SIRA ONEMLI: anlik goruntu, PANODAN ONCE kaydedilir.
+    # Pano ust seridinde "dogrulama icin kac goruntu birikti" yaziyor ve bu
+    # sayiyi feature store'dan okuyor. Kayit sonraya birakilirsa pano her gun
+    # BUGUNU SAYMAZ — kalici olarak bir eksik gosterir ve kullanici sayaci
+    # ilerlemiyor sanir. (compute_deltas zaten daha yukarida calisti ve
+    # yalnizca bugunden ONCEKI goruntulere bakar; bu sira onu etkilemez.)
     factor_ids = [f["id"] for f in cfg["factors"]]
     feat = ml.to_feature_matrix(result, factor_ids)
     snap_path = ml.save_snapshot(feat)
+
+    # Kagit uzerinde defter: bugunun ilk N'i, gercek getirisi olculmek uzere
+    # kaydedilir. Panodan ONCE, cunku pano defterin ozetini gosteriyor.
+    try:
+        from src import paper
+        paper.record_live(result, top_n=paper.DEFAULT_TOP_N)
+        # Degerleme de burada yapilir: pano defterin OZETINI gosteriyor, yani
+        # ozet panodan once hazir olmali. (Ayni sira hatasi sayacta bir kez
+        # yapildi ve pano her gun bir eksik gosterdi.)
+        pinfo = paper.refresh(horizon=21)
+        pl = (pinfo.get("live") or {})
+        if pl.get("ok"):
+            print(f"      kagit defter: {pl['cohorts']} kohort, endeks farki "
+                  f"%{pl['excess_pct']}")
+    except Exception as exc:                      # defter kritik yol degil
+        print(f"      UYARI: kagit defter guncellenemedi ({exc})")
+
+    html_path = report.write_html(result, diag, OUT / "dashboard.html", top_n=args.top)
+    csv_path = report.write_csv(result, OUT / "ranking.csv")
     llm_path = ml.export_for_llm(result, diag, OUT / "llm_export.json", top_n=args.top)
 
     (OUT / "diagnostics.json").write_text(
@@ -476,12 +758,67 @@ def cmd_scan(args: argparse.Namespace) -> int:
     return 0
 
 
+FACTOR_IC = ROOT / "data" / "faktor_ic.json"
+
+
+def _save_factor_ic(ic: "pd.DataFrame", cfg: dict, horizon: int, labeled: int,
+                    dates: int, source: str) -> None:
+    """Parametre bazli IC tablosunu kalici olarak saklar (pano bunu okur).
+
+    Yaninda YAPILANDIRILMIS agirlik da tasinir: kullanicinin gormesi gereken
+    sey tek basina IC degil, "bu parametreye verdigim agirlik olculen gucuyle
+    uyumlu mu" karsilastirmasidir. Agirlik ONERISI uretilir ama HICBIR SEY
+    otomatik degistirilmez -- degisiklik kullanicinin onayiyla yapilir.
+    """
+    weights = {f["id"]: float(f.get("weight", 0)) for f in cfg["factors"]}
+    rows = []
+    for r in ic.to_dict("records"):
+        fid = r["factor"]
+        w = weights.get(fid, 0.0)
+        icv = r.get("ic_mean") or 0.0
+        if icv <= 0.005:
+            oneri = "agirlik dusurulmeli veya kaldirilmali"
+        elif icv >= 0.05 and w < 5:
+            oneri = "agirlik artirilabilir"
+        else:
+            oneri = "mevcut agirlik makul"
+        rows.append({**r, "weight": w, "suggestion_tr": oneri})
+
+    payload = {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "horizon": horizon,
+        "source": source,
+        "labeled_rows": labeled,
+        "dates": dates,
+        "factors": rows,
+        "note_tr": ("Panel kaynakli olcumler hayatta kalma yanliligi tasir ve "
+                    "yalnizca fiyat turevi parametreleri kapsar."
+                    if source == "panel" else
+                    "Gercek taramalardan olculmustur."),
+    }
+    try:
+        FACTOR_IC.parent.mkdir(parents=True, exist_ok=True)
+        FACTOR_IC.write_text(json.dumps(payload, ensure_ascii=False, indent=2),
+                             encoding="utf-8")
+        print(f"\n  Parametre IC tablosu kaydedildi: {FACTOR_IC.name}")
+    except OSError:
+        pass
+
+
 def cmd_learn(args: argparse.Namespace) -> int:
     """Biriken anlik goruntuleri ileri getiriyle etiketle ve agirliklari ogren."""
     cfg = load_config(Path(args.config))
     factor_ids = [f["id"] for f in cfg["factors"]]
 
-    snaps = ml.load_all_snapshots()
+    # --pretrain: gecmise donuk panelden olc. Canli magaza dolana kadar
+    # "hangi parametre gercekten calisiyor" sorusuna bugun cevap verebilmenin
+    # tek yolu bu. Yanlilik tasir, cikti da bunu isaretler.
+    store = None
+    if getattr(args, "pretrain", False):
+        from src import backfill as _bf
+        store = _bf.BACKFILL_STORE
+
+    snaps = ml.load_all_snapshots(store)
     if snaps.empty:
         print("HATA: feature store bos. Once birkac kez 'python run.py' calistir.\n"
               "      Anlamli sonuc icin en az 2-3 ay, haftada bir tarama onerilir.", file=sys.stderr)
@@ -512,9 +849,16 @@ def cmd_learn(args: argparse.Namespace) -> int:
                   f"{(r['icir'] if r['icir'] is not None else float('nan')):>8.2f} {r['periods']:>7}")
         print("\n  Yorum: |IC|>0.03 zayif-kullanilabilir, >0.05 iyi, >0.10 cok iyi")
 
+        # Panonun okudugu KALICI dosya. learned_weights.json yalnizca agirlik
+        # ogrenmesi basariliysa yaziliyordu; oysa IC tablosu kendi basina en
+        # degerli cikti -- "hangi parametre ise yariyor" sorusunun cevabi.
+        _save_factor_ic(ic, cfg, args.horizon, n_lab, len(dates),
+                        "panel" if store is not None else "canli")
+
     weights = ml.learn_weights(labeled, factor_ids, label_col, method=args.method)
     if not weights:
         print("\nAgirlik ogrenilemedi (yetersiz veri veya pozitif IC yok).", file=sys.stderr)
+        print("IC tablosu yine de kaydedildi.", file=sys.stderr)
         return 1
 
     OUT.mkdir(parents=True, exist_ok=True)
@@ -693,16 +1037,65 @@ def cmd_watch(args: argparse.Namespace) -> int:
             for s in a["signals"][:4]:
                 print(f"       [{s['siddet']}] {s['baslik']}")
 
+    # --- Bildirim: stop kirilmasi ve satis sinyali ziyaret bekleyemez -------
+    try:
+        from src import notify
+        prev_top = _previous_top(10)
+        ranking = None
+        rp = OUT / "ranking.csv"
+        if rp.exists():
+            try:
+                ranking = pd.read_csv(rp)
+            except Exception:
+                ranking = None
+        built = notify.build_alerts(good, ranking=ranking, previous_top=prev_top)
+        sent = notify.send(built)
+        if sent.get("sent"):
+            kanal = ", ".join(k for k, v in sent["channels"].items() if v) or "yok"
+            print(f"\n  Bildirim: {sent['sent']} uyari gonderildi ({kanal})")
+    except Exception as exc:
+        print(f"  UYARI: bildirim gonderilemedi ({exc})")
+
     print("\n" + "=" * 78)
     print(f"  Pano:   {html}")
     print(f"  Gecmis: {hist_path}")
     return 0
 
 
+def run_stage(name: str, fn, essential: bool, degraded: list[str]) -> int:
+    """Bir gunluk is adimini yalitilmis calistirir.
+
+    NEDEN: 15-17 Agustos'ta OGRENME adimindaki KOZMETIK bir print satiri
+    (bozuk bir karakter yuzunden) istisna atti ve o gune ait BASARIYLA
+    tamamlanmis taramanin tamamini gecersiz kildi -- cikis kodu 1 oldu, gun
+    isaretlenmedi, sekiz tetigin hepsi ayni taramayi bastan yapti ve Yahoo
+    kotasini bosa harcadi.
+
+    Ders: bir adimin cokusu, digerlerinin urettigi degeri silmemeli. Yalnizca
+    ZORUNLU adimlarin (tarama) basarisizligi gunu basarisiz yapar; digerleri
+    gurultuyle raporlanir ama gunu tekrar tetiklemez.
+    """
+    import traceback
+
+    try:
+        return int(fn() or 0)
+    except KeyboardInterrupt:
+        raise
+    except Exception as exc:
+        traceback.print_exc()
+        etiket = "ZORUNLU" if essential else "ikincil"
+        print(f"\nUYARI: '{name}' adimi coktu ({etiket}): "
+              f"{type(exc).__name__}: {exc}", file=sys.stderr)
+        degraded.append(name)
+        return 1 if essential else 0
+
+
 def cmd_daily(args: argparse.Namespace) -> int:
     """Gunluk tam dongu: taze tarama + izleme listesi analizi.
 
     Gorev Zamanlayici'ya baglanacak tek komut budur.
+
+    Adimlar birbirinden YALITILMISTIR: ayrintisi run_stage'de.
     """
     from src import watchlist
 
@@ -711,32 +1104,85 @@ def cmd_daily(args: argparse.Namespace) -> int:
     print(f"GUNLUK CALISMA — {stamp}")
     print("=" * 78)
 
+    degraded: list[str] = []
+
     # Bayat fiyatla gunluk karar verilmez: once bos/bozuk kayitlari at.
-    purged = cache.purge_invalid("yahoo")
+    purged = run_stage("onbellek temizligi",
+                       lambda: cache.purge_invalid("yahoo"), False, degraded)
     if purged:
         print(f"[on hazirlik] {purged} bos/bozuk onbellek kaydi temizlendi\n")
 
-    print(">>> 1/2  TARAMA\n")
-    rc = cmd_scan(args)
+    print(">>> 1/3  TARAMA\n")
+    rc = run_stage("tarama", lambda: cmd_scan(args), True, degraded)
     if rc != 0:
         print("\nUYARI: tarama basarisiz; izleme listesi yine de guncellenecek.",
               file=sys.stderr)
 
+    rc2 = 0
     if not watchlist.load():
-        print("\n>>> 2/2  IZLEME LISTESI — bos, atlandi")
+        print("\n>>> 2/3  IZLEME LISTESI — bos, atlandi")
         print("     Panodan '+ EKLE' ile hisse sec, sonra:")
         print("     python run.py watch add <SEMBOL> --price <FIYAT>")
-        return rc
+    else:
+        print("\n" + ">>> 2/3  IZLEME LISTESI\n")
+        watch_args = argparse.Namespace(action="update", ticker=None, price=None,
+                                        qty=None, note="", use_cache=False)
+        rc2 = run_stage("izleme listesi", lambda: cmd_watch(watch_args),
+                        False, degraded)
 
-    print("\n" + ">>> 2/2  IZLEME LISTESI\n")
-    watch_args = argparse.Namespace(action="update", ticker=None, price=None,
-                                    qty=None, note="", use_cache=False)
-    rc2 = cmd_watch(watch_args)
+    run_stage("ogrenme dongusu", lambda: _daily_learning(args), False, degraded)
+    run_stage("haftalik yedek", _weekly_backup, False, degraded)
 
-    # --- 3/3  OGRENME DONGUSU ----------------------------------------------
-    # Kendi kendini besleyen kisim: veri yeterliyse periyodik olarak yeniden
-    # egitir ve yalnizca esikleri gecen modeli terfi ettirir. Yetersizse
-    # sessizce ilerlemeyi bildirir — her gun bosuna egitmez.
+    print("\n" + "=" * 78)
+    print("GUNLUK CALISMA TAMAMLANDI" if not degraded
+          else f"GUNLUK CALISMA TAMAMLANDI ({len(degraded)} adim eksik)")
+    if degraded:
+        print(f"  Eksik adimlar: {', '.join(degraded)}")
+    print(f"  Tarama panosu : {OUT / 'dashboard.html'}")
+    print(f"  Izleme panosu : {OUT / 'watchlist.html'}")
+    return rc or rc2
+
+
+def _weekly_backup() -> int:
+    """Haftada bir sifreli yedek alir.
+
+    Feature store yeniden uretilemez ve her gun buyuyor. Yedek elle
+    calistirilmaya birakilirsa alinmaz -- gunluk isin bir parcasi olmali.
+    Her gun almak gereksiz (gunde ~2 MB), haftada bir yeterli.
+
+    Parola ortam degiskeninde yoksa SESSIZCE atlanir: gunluk is parola
+    soramaz (etkilesimli degil) ve bu yuzden gunu basarisiz saymamali.
+    """
+    import os
+
+    from src import backup as bk
+
+    pw = os.environ.get("DASHBOARD_PASSWORD")
+    if not pw:
+        return 0
+
+    last = bk.latest()
+    if last:
+        age_days = (time.time() - last.stat().st_mtime) / 86400
+        if age_days < 7:
+            return 0
+
+    print("\n>>> HAFTALIK YEDEK\n")
+    r = bk.create(pw)
+    print(f"     {r['path']}  ({r['mb']} MB, {r['summary']['files']} dosya)")
+    removed = bk.prune(keep=8)
+    if removed:
+        print(f"     eski yedek silindi: {len(removed)} dosya")
+    return 0
+
+
+def _daily_learning(args: argparse.Namespace) -> int:
+    """Gunluk isin ogrenme adimi.
+
+    Kendi kendini besleyen kisim: veri yeterliyse periyodik olarak yeniden
+    egitir ve yalnizca esikleri gecen modeli terfi ettirir. Yetersizse
+    sessizce ilerlemeyi bildirir — her gun bosuna egitmez.
+    """
     from src import dataset as _ds
     from src import training as _tr
 
@@ -747,6 +1193,13 @@ def cmd_daily(args: argparse.Namespace) -> int:
               f"anlik goruntu, {ready['span_days']}/{ready['need_span_days']} gun "
               f"(%{ready['progress_pct']})")
         print("     Egitim, esik asilinca kendiliginden baslayacak.")
+        from src import backfill as _bf
+        _bm = _bf.info()
+        if _bm:
+            print(f"     Beklerken: gecmise donuk panel hazir ({_bm['snapshots']} "
+                  f"goruntu) -> 'python run.py ml train --pretrain'")
+        else:
+            print("     Beklemeden mimari denemek icin: python run.py history")
     elif args.no_train:
         print("     --no-train verildi, egitim atlandi.")
     else:
@@ -759,18 +1212,159 @@ def cmd_daily(args: argparse.Namespace) -> int:
             print(f"     Sampiyon guncel ({champ['model']}, agirlik {champ['weight']}). "
                   f"Yeniden egitim {args.retrain_every} taramada bir.")
         else:
+            # Parametre IC tablosunu da tazele: pano bunu okuyor ve canli
+            # veriyle olculdugu anda panel kaynakli (yanlili) surumun yerini
+            # almasi gerekiyor.
+            try:
+                learn_args = argparse.Namespace(
+                    config=str(ROOT / "config" / "weights.yaml"),
+                    horizon=getattr(args, "horizon", 21), method="ic",
+                    pretrain=False, no_cache=False)
+                cmd_learn(learn_args)
+            except Exception as exc:
+                print(f"     UYARI: parametre IC tablosu tazelenemedi ({exc})")
+
             print(f"     Yeniden egitim basliyor (ufuk {getattr(args,'horizon',21)})...")
             train_args = argparse.Namespace(
                 ml_action="train", models=None, horizon=getattr(args, "horizon", 21),
                 splits=5, embargo=5, window=10, promote=True, force=False,
-                no_cache=False)
+                no_cache=False, pretrain=False, min_rows=30,
+                horizons=None, no_ensemble=False)
             cmd_ml(train_args)
+    return 0
+
+
+def _print_paper(s: dict, baslik: str) -> None:
+    if not s.get("ok"):
+        print(f"  {baslik}: {s.get('reason')}"
+              + (f" ({s['bekleyen']} pozisyon bekliyor)" if s.get("bekleyen") else ""))
+        return
+    print(f"\n  {baslik}")
+    print(f"    donem        : {s['first_date']} -> {s['last_date']}  "
+          f"({s['cohorts']} kohort, {s['positions']} pozisyon)")
+    print(f"    ortalama     : %{s['mean_pct']:+.2f}   "
+          f"(SPY %{s['bench_mean_pct']:+.2f})" if s.get("bench_mean_pct") is not None
+          else f"    ortalama     : %{s['mean_pct']:+.2f}")
+    if s.get("excess_pct") is not None:
+        print(f"    ENDEKS FARKI : %{s['excess_pct']:+.2f}   "
+              f"(pozisyonlarin %{s['excess_positive_pct']}'i endeksi yendi)")
+    print(f"    isabet       : %{s['hit_rate_pct']} pozitif  "
+          f"(kazanan ort %{s['avg_win_pct']}, kaybeden ort %{s['avg_loss_pct']})")
+    print(f"    dagilim      : en iyi %{s['best_pct']}, en kotu %{s['worst_pct']}, "
+          f"std %{s['std_pct']}")
+    if s.get("t_stat") is not None:
+        guc = "anlamli" if abs(s["t_stat"]) >= 2 else "gurultuden ayirt EDILEMEZ"
+        print(f"    t (kohort)   : {s['t_stat']}  -> {guc}")
+    if s.get("bias_warning"):
+        print(f"    UYARI: {s['bias_warning']}")
+
+
+def cmd_paper(args: argparse.Namespace) -> int:
+    """Kagit uzerinde portfoy defteri — sistemin kendi karnesi."""
+    from src import paper
+
+    if args.paper_action in ("build",):
+        print("Defter dolduruluyor...")
+        r1 = paper.build_from_feature_store(top_n=args.top)
+        print(f"  gercek anlik goruntuler : "
+              + (f"{r1['dates']} tarih, {r1['added']} pozisyon" if r1.get("ok")
+                 else r1.get("reason")))
+        if args.panel:
+            cfg = load_config(Path(args.config))
+            print("  geriye donuk panel siralaniyor (birkac dakika surebilir)...")
+            r2 = paper.build_from_panel(cfg, top_n=args.top)
+            print(f"  gecmise donuk panel     : "
+                  + (f"{r2['dates']} tarih, {r2['added']} pozisyon" if r2.get("ok")
+                     else r2.get("reason")))
+        else:
+            print("  gecmise donuk panel     : atlandi (--panel ile eklenir)")
+
+    if args.paper_action in ("build", "mark"):
+        print("\nPozisyonlar degerleniyor (onbellekten, ag istegi yok)...")
+        m = paper.mark()
+        if not m.get("ok"):
+            print(f"BASARISIZ: {m.get('reason')}", file=sys.stderr)
+            return 1
+        print(f"  {m['positions']} pozisyon degerlendi"
+              + (f", {m['missing_price']} sembolun fiyati onbellekte yok"
+                 if m["missing_price"] else ""))
+
+    out = paper.refresh(horizon=args.horizon)
+    if not out.get("marked", {}).get("ok", True) and "live" not in out:
+        print(f"BASARISIZ: {out.get('reason')}", file=sys.stderr)
+        return 1
 
     print("\n" + "=" * 78)
-    print("GUNLUK CALISMA TAMAMLANDI")
-    print(f"  Tarama panosu : {OUT / 'dashboard.html'}")
-    print(f"  Izleme panosu : {OUT / 'watchlist.html'}")
-    return rc or rc2
+    print(f"KAGIT UZERINDE DEFTER — ilk {args.top}, {args.horizon} islem gunu tutma")
+    print("=" * 78)
+    _print_paper(out.get("live") or {}, "GERCEK TARAMALAR (yanlilik yok)")
+    _print_paper(out.get("panel") or {}, "GECMISE DONUK PANEL (ust sinir)")
+    print(f"\n  Defter: {paper.COHORTS}")
+    return 0
+
+
+def cmd_backfill(args: argparse.Namespace) -> int:
+    """Onbellekteki fiyat gecmisinden gecmise donuk anlik goruntu uretir."""
+    from src import backfill as bf
+
+    if args.merge_only:
+        meta = bf.materialize(step=args.step, horizon=args.horizon)
+        if not meta.get("ok"):
+            print(f"BASARISIZ: {meta.get('reason')}", file=sys.stderr)
+            return 1
+        print(f"Birikmis yiginlar panele cevrildi: {meta['snapshots']} anlik "
+              f"goruntu, {meta['rows']} satir, {meta['tickers_used']} hisse")
+        print(f"  aralik: {meta['first_date']} -> {meta['last_date']}")
+        print("  (uretim devam ediyorsa bitince bu dosyalar tazelenir)")
+        return 0
+
+    tickers = sorted(scanlog.load().keys())
+    if args.limit:
+        tickers = tickers[: args.limit]
+
+    print("=" * 74)
+    print("GECMISE DONUK ANLIK GORUNTU URETIMI")
+    print("=" * 74)
+    print(f"  sembol           : {len(tickers)}")
+    print(f"  izgara           : her {args.step} islem gununde bir, "
+          f"en fazla {args.snapshots} goruntu")
+    print(f"  faktor           : {len(bf.PIT_FACTORS)} (yalnizca fiyat/hacim turevi)")
+    print("  temel veri       : DAHIL DEGIL — gecmise donuk bilinemez, "
+          "eklemek gelecege bakis olurdu")
+    print()
+
+    t0 = time.time()
+    try:
+        meta = bf.build(step=args.step, max_snapshots=args.snapshots,
+                        horizon=args.horizon, workers=args.workers,
+                        tickers=tickers, resume=not args.restart)
+    except KeyboardInterrupt:
+        print("\n  Kesildi. Islenen semboller kaydedildi; ayni komut kaldigi "
+              "yerden devam eder.", file=sys.stderr)
+        return 130
+    if not meta.get("ok"):
+        print(f"BASARISIZ: {meta.get('reason')}", file=sys.stderr)
+        return 1
+
+    print()
+    print(f"  anlik goruntu    : {meta['snapshots']}")
+    print(f"  toplam satir     : {meta['rows']:,}".replace(",", "."))
+    print(f"  hisse (kullanildi/atlandi): {meta['tickers_used']} / "
+          f"{meta['tickers_skipped']}")
+    print(f"  goruntu basina   : ~{meta['rows_per_snapshot_median']} hisse")
+    print(f"  tarih araligi    : {meta['first_date']} -> {meta['last_date']}")
+    print(f"  sure             : {time.time() - t0:.0f} sn")
+    print(f"  depo             : {meta['store']}")
+    if not meta.get("complete"):
+        print()
+        print(f"  YARIM: {meta['tickers_remaining']} sembol kaldi. Panel su "
+              f"haliyle kullanilabilir; ayni komutu tekrar calistirinca "
+              f"kaldigi yerden devam eder.")
+    print()
+    print("  UYARI: " + meta["bias_warning"])
+    print()
+    print("  Simdi: python run.py ml train --pretrain --models ridge,mlp,seq")
+    return 0
 
 
 def cmd_ml(args: argparse.Namespace) -> int:
@@ -779,7 +1373,47 @@ def cmd_ml(args: argparse.Namespace) -> int:
     from src import models as mz
     from src import training as tr
 
+    # --- COKLU UFUK ---------------------------------------------------------
+    # Tek ufuk (21 gun) yalnizca bir soruyu soruyordu. Ayni veriden 5, 21 ve 63
+    # gunluk ufuklari birden olcmek uc kat kanit uretir ve daha onemlisi
+    # SINYALIN OMRUNU gosterir: 5 gunde var olup 63 gunde kaybolan bir sinyal
+    # kisa vadeli bir etkidir; tersi degerleme etkisidir. Bu ayrim, hangi
+    # parametrenin neden calistigini anlamanin en kestirme yolu.
+    if getattr(args, "horizons", None) and args.ml_action in ("train", "evaluate"):
+        hs = []
+        for part in str(args.horizons).split(","):
+            part = part.strip()
+            if part.isdigit() and 1 <= int(part) <= 250:
+                hs.append(int(part))
+        if not hs:
+            print("HATA: --horizons gecersiz (orn. 5,21,63)", file=sys.stderr)
+            return 1
+
+        rows = []
+        for h in sorted(set(hs)):
+            print("\n" + "#" * 74)
+            print(f"# UFUK {h} ISLEM GUNU")
+            print("#" * 74)
+            sub_args = argparse.Namespace(**{**vars(args), "horizons": None,
+                                             "horizon": h})
+            rc = cmd_ml(sub_args)
+            rows.append((h, rc))
+
+        print("\n" + "=" * 74)
+        print("UFUK KARSILASTIRMASI")
+        print("=" * 74)
+        for h, rc in rows:
+            print(f"  {h:>3} gun : {'tamamlandi' if rc == 0 else 'basarisiz'}")
+        print("\n  Sinyal kisa ufukta guclu, uzun ufukta zayifsa: kisa vadeli bir")
+        print("  etki (momentum/haber). Tersi ise degerleme etkisidir. Ikisinde de")
+        print("  yoksa sinyal yoktur.")
+        return 0 if all(rc == 0 for _, rc in rows) else 1
+
     action = args.ml_action
+    store = None
+    if getattr(args, "pretrain", False):
+        from src import backfill as bf
+        store = bf.BACKFILL_STORE
 
     # ------------------------------------------------------------- durum
     if action == "status":
@@ -804,6 +1438,21 @@ def cmd_ml(args: argparse.Namespace) -> int:
                   f"{ready['missing_days']} gun")
             print("  Her is gunu 'python run.py daily' calistir; sayac kendiliginden ilerler.")
 
+        from src import backfill as _bf
+        bmeta = _bf.info()
+        print()
+        if bmeta:
+            print(f"  ON EGITIM PANELI     : {bmeta['snapshots']} goruntu, "
+                  f"{bmeta['rows']} satir")
+            print(f"    aralik             : {bmeta['first_date']} -> {bmeta['last_date']}")
+            print(f"    faktor             : {len(bmeta['factors'])} (fiyat turevi)")
+            print("    Beklemeden mimari denemek icin: "
+                  "python run.py ml train --pretrain")
+        else:
+            print("  ON EGITIM PANELI     : yok")
+            print("    Onbellekteki 2 yillik fiyat gecmisinden gecmise donuk panel")
+            print("    uretilebilir: python run.py history")
+
         print()
         if champ:
             print(f"  SAMPIYON MODEL       : {champ['model']} (ufuk {champ['horizon']})")
@@ -818,7 +1467,17 @@ def cmd_ml(args: argparse.Namespace) -> int:
 
     # ------------------------------------------------------------- egitim
     if action in ("train", "evaluate"):
-        ready = ds.readiness(args.horizon)
+        ready = ds.readiness(args.horizon, store=store)
+        if store is not None:
+            from src import backfill as bf
+            bmeta = bf.info()
+            if bmeta is None:
+                print("Gecmise donuk panel yok. Once: python run.py history",
+                      file=sys.stderr)
+                return 1
+            print(f"ON EGITIM MODU — {bmeta['snapshots']} gecmise donuk goruntu, "
+                  f"{bmeta['first_date']} -> {bmeta['last_date']}")
+            print("Bu modda SAMPIYON SECILMEZ (hayatta kalma yanliligi).\n")
         if not ready["ready_to_train"] and not args.force:
             print("EGITIM ENGELLENDI — yetersiz veri.\n", file=sys.stderr)
             print(f"  anlik goruntu : {ready['snapshots']} / {ready['need_snapshots']}")
@@ -844,7 +1503,10 @@ def cmd_ml(args: argparse.Namespace) -> int:
                   f"{args.splits} katman, embargo {args.embargo})...")
             res = tr.walk_forward(name, horizon=args.horizon, n_splits=args.splits,
                                   embargo=args.embargo, window=args.window,
-                                  use_cache=not args.no_cache)
+                                  use_cache=not args.no_cache, store=store,
+                                  min_rows_per_date=args.min_rows,
+                                  force=args.force,
+                                  collect_predictions=not args.no_ensemble)
             results[name] = res
             if not res.get("ok"):
                 print(f"    BASARISIZ: {res.get('reason')}")
@@ -852,6 +1514,32 @@ def cmd_ml(args: argparse.Namespace) -> int:
             print(f"    IC {res['ic_mean']}  ICIR {res['icir']}  "
                   f"katman {res['folds']} ({res['positive_folds']} pozitif)")
             print(f"    ilk-dilim getiri farki: {res['top_decile_spread']}")
+            if res["folds"] < args.splits:
+                # Sessizce az katman kurmak, sonucu oldugundan guvenilir
+                # gosterir. Neden kurulamadigi soylenmeli.
+                snaps = (res.get("panel") or {}).get("dates_usable", "?")
+                print(f"    NOT: {args.splits} katman istendi, {res['folds']} "
+                      f"kuruldu. Her katman icin test penceresinden geriye "
+                      f"{args.horizon}+{args.embargo} gun arindiriliyor ve "
+                      f"en az 20 egitim gunu gerekiyor; {snaps} anlik goruntu "
+                      f"bu kadarina yetiyor. Daha fazla katman = daha fazla gun.")
+
+        # --- Topluluk: uyelerin yuzdelik siralarinin ortalamasi -------------
+        # Tek bir modeli secip digerlerini atmak, farkli hatalar yapan
+        # tahmincilerin birbirini duzeltme imkanini bosa harciyordu.
+        if not args.no_ensemble:
+            ens = tr.ensemble(results)
+            if ens.get("ok"):
+                results["topluluk"] = ens
+                print(f"\n>>> topluluk ({'+'.join(ens['members'])}) degerlendirildi")
+                print(f"    IC {ens['ic_mean']}  ICIR {ens['icir']}  "
+                      f"katman {ens['folds']} ({ens['positive_folds']} pozitif)")
+            elif len([r for r in results.values() if r.get("ok")]) >= 2:
+                print(f"\n>>> topluluk kurulamadi: {ens.get('reason')}")
+
+        # Tahmin dizileri yalnizca topluluk icindi; ozet ciktilarda tasima.
+        for r in results.values():
+            r.pop("_predictions", None)
 
         base = results.get("ridge")
         print("\n" + "=" * 74)
@@ -861,11 +1549,11 @@ def cmd_ml(args: argparse.Namespace) -> int:
         best_name, best_dec = None, None
         for name, res in results.items():
             if not res.get("ok"):
-                print(f"  {name:<8} {'—':>9} {'—':>8} {'—':>7} {'—':>13}  hayir")
+                print(f"  {name:<9.9s}{'—':>9} {'—':>8} {'—':>7} {'—':>13}  hayir")
                 continue
             dec = tr.promotion_check(res, baseline=base if name != "ridge" else None)
             tr.record_candidate(res, dec)
-            print(f"  {name:<8} {res['ic_mean']:>9.4f} {(res['icir'] or 0):>8.2f} "
+            print(f"  {name:<9.9s}{res['ic_mean']:>9.4f} {(res['icir'] or 0):>8.2f} "
                   f"{res['folds']:>7} {(res['top_decile_spread'] or 0):>13.4f}  "
                   f"{'EVET' if dec['promote'] else 'hayir'}")
             if dec["promote"] and (best_dec is None or
@@ -873,6 +1561,12 @@ def cmd_ml(args: argparse.Namespace) -> int:
                 best_name, best_dec = name, dec
 
         if best_name is None:
+            if store is not None:
+                print("\n  On egitim modunda terfi YAPILMAZ — bu beklenen sonuc.")
+                print("  Yukaridaki IC degerleri mimari karsilastirmasi icindir:")
+                print("  hangi model turu bu problemde sinyal yakalayabiliyor?")
+                print("  Gercek terfi, canli anlik goruntular birikince olur.")
+                return 0
             print("\n  Hicbir model terfi esiklerini gecmedi.")
             for name, res in results.items():
                 if res.get("ok"):
@@ -894,6 +1588,85 @@ def cmd_ml(args: argparse.Namespace) -> int:
         return 0
 
     return 1
+
+
+def cmd_backup(args: argparse.Namespace) -> int:
+    """Yeniden uretilemeyen veriyi sifreli arsivde dondurur."""
+    from src import backup as bk
+    from src import publish as pub
+
+    if args.backup_action == "list":
+        d = Path(args.dir) if args.dir else bk.BACKUP_DIR
+        files = sorted(d.glob("yedek_*.hsy")) if d.exists() else []
+        if not files:
+            print(f"Yedek yok: {d}")
+            return 0
+        print("=" * 74)
+        print(f"YEDEKLER — {d}")
+        print("=" * 74)
+        for p in files:
+            meta = bk.inspect(p)
+            mb = p.stat().st_size / 1024 / 1024
+            print(f"  {p.name:<34} {mb:7.1f} MB  {meta.get('created_at', '?')[:16]}"
+                  f"  {meta.get('summary', {}).get('files', '?')} dosya")
+        return 0
+
+    if args.backup_action == "restore":
+        src = Path(args.file) if args.file else bk.latest(
+            Path(args.dir) if args.dir else None)
+        if not src or not src.exists():
+            print("HATA: acilacak yedek bulunamadi (--file ile belirt).",
+                  file=sys.stderr)
+            return 1
+        target = Path(args.target) if args.target else ROOT / "yedek_acilan"
+        pw = pub.get_password()
+        if not pw:
+            print("HATA: parola alinamadi.", file=sys.stderr)
+            return 1
+        print(f"Aciliyor: {src.name} -> {target}")
+        r = bk.restore(src, pw, target, overwrite=args.overwrite)
+        if not r.get("ok"):
+            print(f"BASARISIZ: {r['reason']}", file=sys.stderr)
+            return 1
+        print(f"  {r['written']} dosya yazildi"
+              + (f", {r['skipped']} atlandi (zaten var)" if r["skipped"] else ""))
+        print(f"  Yedek tarihi: {r.get('created_at')}")
+        print("\n  NOT: calisan kuruluma DEGIL, ayri bir dizine acildi.")
+        print("  Icerigi kontrol edip elle tasiyabilirsin.")
+        return 0
+
+    # --- olustur
+    pw = pub.get_password()
+    if not pw:
+        print("HATA: parola alinamadi. DASHBOARD_PASSWORD ortam degiskenini "
+              "ayarla veya sorulunca gir.", file=sys.stderr)
+        return 1
+
+    print("Yedek olusturuluyor...")
+    try:
+        r = bk.create(pw, Path(args.dir) if args.dir else None, label=args.label)
+    except FileNotFoundError as exc:
+        print(f"BASARISIZ: {exc}", file=sys.stderr)
+        return 1
+
+    s = r["summary"]
+    print("=" * 74)
+    print("YEDEK OLUSTURULDU")
+    print("=" * 74)
+    for part in s["parts"]:
+        print(f"  {part['path']:<28} {part['files']:>6} dosya  {part['mb']:>8.2f} MB")
+    if s["missing"]:
+        print(f"  (yok, atlandi: {', '.join(s['missing'])})")
+    print(f"\n  dosya   : {r['path']}")
+    print(f"  boyut   : {r['mb']} MB  (sikistirilmamis {r['plain_mb']} MB)")
+    print("  sifreli : AES-256-GCM + PBKDF2-SHA256 (600.000 tur)")
+    print("\n  Parola kaybedilirse arsiv ACILAMAZ. Baska kurtarma yolu yok.")
+
+    removed = bk.prune(keep=args.keep, out_dir=Path(args.dir) if args.dir else None)
+    if removed:
+        print(f"\n  Eski yedek silindi ({args.keep} tanesi tutuluyor): "
+              f"{', '.join(removed)}")
+    return 0
 
 
 def cmd_publish(args: argparse.Namespace) -> int:
@@ -1076,7 +1849,16 @@ def main() -> int:
     # sayesinde birkac gunde tum evren dolasilir (bulgu K3).
     p.add_argument("--no-backfill", action="store_true",
                    help="onbellekteki eski hisseleri skorlamaya katma")
-    p.add_argument("--backfill-days", type=int, default=5,
+    # 5 gundu; 12'ye cikarildi (02.09.2026). Sebep: donusumlu tarama turda 800
+    # sembol deniyor, evren ~2790 -> tam tur EN IYI ihtimalle 3.5 gun. Hiz siniri
+    # yuzunden gercek basari %50-78 oldugundan tam tur pratikte 7-10 gun suruyor.
+    # 5 gunluk pencere bu turu YAPISAL OLARAK kapsayamiyordu: onbellekteki 3350
+    # hissenin ancak ~450'si pencereye giriyor, skorlanan sayi cokuyor, cikti
+    # guvenlik kapisi panoyu reddediyor, gun isaretlenmiyor, onbellek daha da
+    # yasleniyor -- kendini besleyen bir sarmal (bir haftaligina buna girildi).
+    # Pencere artik gercek tur suresiyle ayni buyuklukte. Bedeli veri bayatligi,
+    # o yuzden diag["data_age"] ile sayilip panoda gosteriliyor.
+    p.add_argument("--backfill-days", type=int, default=12,
                    help="onbellekten geri doldurmada kabul edilen azami veri yasi (gun)")
     p.add_argument("--batch", type=int, default=800,
                    help="bir turda taranacak azami sembol (0 = sinirsiz). "
@@ -1091,12 +1873,18 @@ def main() -> int:
     p.add_argument("--weight", action="append", help="faktor_id=deger (tekrarlanabilir)")
     p.add_argument("--use-learned", action="store_true", help="ogrenilmis agirliklari kullan")
     p.add_argument("--no-filters", action="store_true", help="on elemeyi tamamen kapat")
+    p.add_argument("--no-fallback", action="store_true",
+                   help="Yahoo basarisiz olan sembollerde yedek fiyat kaynagini "
+                        "(Nasdaq) deneme")
     p.add_argument("--no-cache", action="store_true")
 
     lp = sub.add_parser("learn", help="agirliklari gecmis verilerden ogren")
     lp.add_argument("--config", default=str(ROOT / "config" / "weights.yaml"))
     lp.add_argument("--horizon", type=int, default=21, help="ileri getiri ufku (islem gunu)")
     lp.add_argument("--method", default="ic", choices=["ic", "ridge"])
+    lp.add_argument("--pretrain", action="store_true",
+                    help="canli feature store yerine gecmise donuk panelden olc "
+                         "(bugun sonuc almak icin; yanlilik tasir)")
     lp.add_argument("--no-cache", action="store_true")
 
     wp = sub.add_parser("watch", help="izleme listesi / pozisyon takibi")
@@ -1128,7 +1916,68 @@ def main() -> int:
                     help="esikleri gecen en iyi modeli sampiyon yap")
     mp.add_argument("--force", action="store_true",
                     help="yetersiz veriye ragmen egit (sonuclar guvenilmez)")
+    mp.add_argument("--pretrain", action="store_true",
+                    help="canli feature store yerine gecmise donuk panelden egit "
+                         "(once 'run.py backfill'). Sampiyon URETMEZ")
+    mp.add_argument("--min-rows", type=int, default=30,
+                    help="bir gunun panele girmesi icin gereken en az hisse sayisi")
+    mp.add_argument("--horizons", default=None,
+                    help="virgullu ufuk listesi (orn. 5,21,63). Verilirse her ufuk "
+                         "ayri egitilir ve karsilastirma tablosu basilir")
+    mp.add_argument("--no-ensemble", action="store_true",
+                    help="modellerin yuzdelik siralarini harmanlayan toplulugu kurma")
     mp.add_argument("--no-cache", action="store_true")
+
+    # Ad "history": tarama tarafindaki --no-backfill/--backfill-days bayraklari
+    # ONBELLEK doldurmayi anlatiyor, bu komut ise GECMIS uretiyor. Ayni kelime
+    # iki farkli sey icin kullanilmasin. Eski ad takma ad olarak duruyor.
+    bf = sub.add_parser("history", aliases=["backfill"],
+                        help="onbellekteki fiyat gecmisinden gecmise donuk anlik "
+                             "goruntu uret (ogrenmenin baslangic sermayesi)")
+    bf.add_argument("--step", type=int, default=3,
+                    help="kac islem gununde bir anlik goruntu (1 = her gun)")
+    bf.add_argument("--snapshots", type=int, default=90,
+                    help="en fazla kac anlik goruntu uretilsin")
+    bf.add_argument("--horizon", type=int, default=21,
+                    help="etiket ufku; son bu kadar gun izgaraya alinmaz")
+    bf.add_argument("--workers", type=int, default=4)
+    bf.add_argument("--limit", type=int, default=None,
+                    help="yalnizca ilk N sembol (deneme icin)")
+    bf.add_argument("--restart", action="store_true",
+                    help="kaldigi yerden devam etme, bastan uret")
+    bf.add_argument("--merge-only", action="store_true",
+                    help="uretim yapma; birikmis yiginlari panele cevir "
+                         "(uretim devam ederken elde olani kullanmak icin)")
+
+    kp = sub.add_parser("paper", aliases=["defter"],
+                        help="kagit uzerinde portfoy defteri: ilk N'in gercek "
+                             "getirisi (sistemin karnesi)")
+    kp.add_argument("paper_action", nargs="?", default="show",
+                    choices=["show", "build", "mark"],
+                    help="show: karne · build: defteri doldur · mark: degerle")
+    kp.add_argument("--config", default=str(ROOT / "config" / "weights.yaml"))
+    kp.add_argument("--top", type=int, default=20,
+                    help="her gun kac hisse deftere yazilsin")
+    kp.add_argument("--horizon", type=int, default=21,
+                    help="tutma suresi (islem gunu)")
+    kp.add_argument("--panel", action="store_true",
+                    help="geriye donuk panelden de uret (11 ay, ama yanlilik tasir)")
+
+    bkp = sub.add_parser("backup", aliases=["yedek"],
+                         help="yeniden uretilemeyen veriyi sifreli arsivle")
+    bkp.add_argument("backup_action", nargs="?", default="create",
+                     choices=["create", "list", "restore"],
+                     help="create: yedek al · list: yedekleri listele · "
+                          "restore: ayri bir dizine ac")
+    bkp.add_argument("--dir", default=None, help="yedek dizini")
+    bkp.add_argument("--file", default=None, help="restore icin yedek dosyasi")
+    bkp.add_argument("--target", default=None,
+                     help="restore hedef dizini (varsayilan: yedek_acilan/)")
+    bkp.add_argument("--overwrite", action="store_true",
+                     help="restore sirasinda mevcut dosyalarin uzerine yaz")
+    bkp.add_argument("--label", default="", help="dosya adina eklenecek etiket")
+    bkp.add_argument("--keep", type=int, default=8,
+                     help="tutulacak en yeni yedek sayisi (0 = hepsi)")
 
     pp = sub.add_parser("publish", help="panolari sifreleyip tek dosya yap")
     pp.add_argument("--set-password", action="store_true",
@@ -1168,6 +2017,12 @@ def main() -> int:
     args = p.parse_args()
     if args.cmd == "ml":
         return cmd_ml(args)
+    if args.cmd in ("paper", "defter"):
+        return cmd_paper(args)
+    if args.cmd in ("backup", "yedek"):
+        return cmd_backup(args)
+    if args.cmd in ("history", "backfill"):
+        return cmd_backfill(args)
     if args.cmd == "publish":
         return cmd_publish(args)
     if args.cmd == "deploy":

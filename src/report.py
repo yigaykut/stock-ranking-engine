@@ -12,7 +12,7 @@ from __future__ import annotations
 
 import json
 import math
-from datetime import datetime, timezone
+from datetime import datetime, timedelta, timezone
 from pathlib import Path
 
 import numpy as np
@@ -155,7 +155,71 @@ def _payload(df: pd.DataFrame, diagnostics: dict, top_n: int) -> dict:
         "totalScored": int(len(df)),
         "validation": _validation_state(),
         "noise": _score_noise(df, diagnostics),
+        "paper": _paper_state(),
+        "factorIC": _factor_ic_state(),
+        "regime": diagnostics.get("regime") or {},
+        "health": _health_state(diagnostics),
     }
+
+
+def _paper_state() -> dict | None:
+    """Kagit uzerinde defterin ozeti (bkz. src/paper.py)."""
+    try:
+        from .paper import load_summary
+        return load_summary()
+    except Exception:
+        return None
+
+
+def _factor_ic_state() -> dict | None:
+    """Parametre bazli IC tablosu.
+
+    Bu olcum sistemde bastan beri vardi (`run.py learn`) ama HICBIR YERDE
+    gorunmuyordu: kullanici 28 parametreye bakip hangisinin ise yaradigini
+    bilemiyordu. Panoda gosterilmesi, "kesinlik cilasi" elestirisine verilen
+    en dogrudan cevap.
+    """
+    p = Path(__file__).resolve().parents[1] / "data" / "faktor_ic.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _health_state(diagnostics: dict) -> dict:
+    """Sistemin kendi sagligi — terminale girmeden gorunsun (bkz. scripts/durum.py)."""
+    out: dict = {
+        "fetchRate": diagnostics.get("fetch_success_rate"),
+        "yahooRate": diagnostics.get("yahoo_success_rate"),
+        "fallbackUsed": diagnostics.get("fallback_used"),
+        "universeFull": diagnostics.get("universe_full"),
+        "scored": diagnostics.get("scored_universe"),
+        "rateLimited": diagnostics.get("fetch_rate_limited"),
+        "aborted": bool(diagnostics.get("fetch_aborted")),
+        "coveragePct": diagnostics.get("universe_coverage_pct"),
+        # Satirlarin hepsi bugunun fiyatindan gelmiyor: donusumlu tarama bir
+        # turda evrenin bir dilimini ceker, gerisi onbellekten katilir. Kac
+        # satirin ne kadar eski oldugu SOYLENMEZSE sira "bugunun siralamasi"
+        # gibi okunur. run.py diag["data_age"] icinde sayiyor.
+        "dataAge": diagnostics.get("data_age"),
+    }
+    # DIKKAT: run_status.json BURADAN OKUNMAZ. O dosya panodan SONRA yazilir,
+    # yani burada okunan kayit her zaman bir ONCEKI calismaya aittir ve pano
+    # "son calisma hatali" gibi yanlis bir sey gosterir. Bu taramanin zamani
+    # zaten `generatedAt` icinde; pano onu kullaniyor.
+    try:
+        from .delisting import info as _dl_info
+        out["delisting"] = _dl_info()
+    except Exception:
+        pass
+    try:
+        from .fundamentals import info as _f_info
+        out["fundamentals"] = _f_info()
+    except Exception:
+        pass
+    return out
 
 
 def _validation_state() -> dict:
@@ -206,6 +270,55 @@ def _validation_state() -> dict:
             "icir": champ.get("icir"),
             "promoted_at": champ.get("promoted_at"),
         },
+        **_countdown(len(dates), span, needed_snaps, needed_days),
+        "pretrain": _pretrain_state(),
+    }
+
+
+def _countdown(snaps: int, span: int, need_snaps: int, need_days: int) -> dict:
+    """Sayacin ne zaman dolacagi.
+
+    "%2.5" tek basina anlamsiz — kullanicinin bilmek istedigi sey NE ZAMAN
+    bitecegi ve bunun icin bir sey yapmasi gerekip gerekmedigi.
+
+    Anlik goruntu is gunlerinde birikir; kalan takvim gunu bu yuzden 7/5
+    ile carpilir.
+    """
+    miss_snaps = max(0, need_snaps - snaps)
+    miss_days = max(0, need_days - span)
+    if not miss_snaps and not miss_days:
+        return {"days_left": 0, "eta": None}
+
+    left = max(int(round(miss_snaps * 7 / 5)), miss_days)
+    eta = datetime.now() + timedelta(days=left)
+    return {
+        "days_left": left,
+        "eta": eta.strftime("%d.%m.%Y"),
+        "missing_snapshots": miss_snaps,
+        "missing_days": miss_days,
+    }
+
+
+def _pretrain_state() -> dict | None:
+    """Gecmise donuk on egitim paneli var mi?
+
+    Kullanici sayaci gorunce "bekleyecek miyim?" diye soruyor. Cevabin yarisi
+    bu: beklemeden denenebilecek bir panel var mi, varsa ne kadar buyuk.
+    """
+    try:
+        from .backfill import info as _bf_info
+        m = _bf_info()
+    except Exception:
+        return None
+    if not m or not m.get("ok"):
+        return None
+    return {
+        "snapshots": m.get("snapshots"),
+        "rows": m.get("rows"),
+        "tickers": m.get("tickers_used"),
+        "first_date": m.get("first_date"),
+        "last_date": m.get("last_date"),
+        "partial": bool(m.get("partial") or not m.get("complete", True)),
     }
 
 
@@ -323,6 +436,22 @@ h2{{font:400 clamp(24px,3.6vw,40px)/1 var(--disp);letter-spacing:.005em;
 .stbar{{display:block;height:4px;background:var(--track);margin:9px 0;
   outline:1px solid rgba(160,140,140,.08)}}
 .stbar>i{{display:block;height:100%;background:var(--c,var(--crimson))}}
+
+/* ============ KARNE / IC / SAGLIK TABLOLARI ============ */
+.muted{{color:var(--ink-3,#8b7d7d);font-size:11.5px;line-height:1.6;margin:10px 0 0}}
+table.mini{{width:100%;border-collapse:collapse;margin:10px 0 0;
+  font:400 12px/1.5 var(--sans,inherit)}}
+table.mini td,table.mini th{{padding:7px 10px;border-bottom:1px solid var(--rule-2);
+  text-align:left;vertical-align:top}}
+table.mini thead th{{font:600 10px/1 var(--mono);letter-spacing:.14em;
+  color:var(--ink-3,#8b7d7d);text-transform:uppercase}}
+table.mini td:first-child{{color:var(--ink-3,#8b7d7d);white-space:nowrap;width:34%}}
+table.mini.wide td:first-child{{color:var(--ink);width:auto;font:400 12px/1.5 var(--mono)}}
+table.mini .num{{text-align:right;font:400 12px/1.5 var(--mono);white-space:nowrap}}
+/* IC satirlari: gurultu olan parametreler goze carpsin — asil bilgi budur */
+tr.ic-warn td{{color:var(--ink-3,#8b7d7d)}}
+tr.ic-ok td:nth-child(2){{color:#1ba372;font-weight:600}}
+tr.ic-info td:nth-child(2){{color:#c9a227}}
 
 /* ============ SAYAC KUTULARI ============ */
 .tiles{{display:grid;grid-template-columns:repeat(auto-fit,minmax(158px,1fr));gap:1px;
@@ -546,6 +675,34 @@ def build_html(df: pd.DataFrame, diagnostics: dict, top_n: int = 40,
       <b>+ EKLE</b> ile hisseyi izleme listesine al &mdash; sagdaki panelden alis fiyatini
       girip komutu kopyalayabilirsin.</p>
   </section>
+  <section id="secPaper" hidden>
+    <div class="sec-head"><span class="sec-num">IV</span><h2>Karne &mdash; Ilk 20 Ne Yapti</h2></div>
+    <div class="sec-rule"></div>
+    <p class="sec-note">Her tarama gunu listenin ilk 20'si bir <b>kohort</b> olarak
+      deftere yazilir, 21 islem gunu tutulur ve SPY'a karsi olculur. Portfoy
+      simulasyonu degildir: sermaye, pozisyon boyutu ve nakit yonetimi devre disidir
+      &mdash; olculen tek sey <b>siralamanin kendisi</b>.</p>
+    <div id="paperBody"></div>
+  </section>
+
+  <section id="secIC" hidden>
+    <div class="sec-head"><span class="sec-num">V</span><h2>Parametreler Gercekten Calisiyor mu</h2></div>
+    <div class="sec-rule"></div>
+    <p class="sec-note">Bilgi Katsayisi (IC), bir parametrenin skoru ile o hissenin
+      ileri getirisi arasindaki siralama korelasyonudur. Olcut:
+      <b>|IC| &gt; 0.03</b> zayif ama kullanilabilir, <b>&gt; 0.05</b> iyi,
+      <b>&gt; 0.10</b> cok iyi. Bunun altindaki her sey gurultudur ve o parametrenin
+      agirligi savunulamaz.</p>
+    <div class="panel"><div id="icBody"></div></div>
+  </section>
+
+  <section id="secHealth" hidden>
+    <div class="sec-head"><span class="sec-num">VI</span><h2>Sistem Sagligi</h2></div>
+    <div class="sec-rule"></div>
+    <p class="sec-note">Otomasyonun kendi durumu &mdash; terminale girmeden gorunsun.</p>
+    <div class="panel"><div id="healthBody"></div></div>
+  </section>
+
 __ASSISTANT_HTML__
 
   <div class="disclaimer">
@@ -610,16 +767,39 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
   const v = DATA.validation || {{}};
   const parts = [];
 
+  // Piyasa rejimi — siralamayi DEGISTIRMEZ, hangi ortamda uretildigini soyler.
+  // Momentum agirlikli bir siralama dusus rejiminde tarihsel olarak en kotu
+  // sonucu verir; bunu bilmeden listeye bakmak eksik bilgiyle bakmaktir.
+  const rg = DATA.regime || {{}};
+  if (rg.label && rg.label !== 'BILINMIYOR') {{
+    const cls = rg.label === 'DUSUS' ? 'warn' : (rg.label === 'YUKSELIS' ? 'ok' : 'info');
+    const bits = [];
+    if (rg.vs_ma200_pct != null) bits.push(`endeks 200g ort. ${{rg.vs_ma200_pct > 0 ? '+' : ''}}${{rg.vs_ma200_pct}}%`);
+    if (rg.breadth_pct != null) bits.push(`genislik %${{rg.breadth_pct}}`);
+    if (rg.vol20_annual_pct != null) bits.push(`oynaklik %${{rg.vol20_annual_pct}}`);
+    parts.push(`<div class="st ${{cls}}"><b>PIYASA REJIMI &middot; ${{rg.label_tr || rg.label}}</b>
+      <p>${{rg.detail_tr || ''}}<br><span class="muted">${{bits.join(' &middot; ')}}</span></p></div>`);
+  }}
+
   // Dogrulama durumu — sistemin en buyuk eksigi, en gorunur yerde
   if (!v.validated) {{
     const p = v.progress_pct || 0;
+    // Sayacin kendisi soru birakiyor: ne zaman dolacak, benim bir sey yapmam
+    // gerekiyor mu? Ikisinin de cevabi burada olmali.
+    const eta = v.eta
+      ? `Su anki hizla <b>${{v.eta}}</b> dolar (yaklasik <b>${{v.days_left}}</b> gun).`
+      : '';
     parts.push(`<div class="st warn">
       <b>DOGRULANMAMIS</b>
       <p>Parametre agirliklari uzman gorusudur; hicbiri ileri getiriyle test
       edilmedi. Bu skorlar <b>hipotez</b>, tahmin degildir.
       <span class="stbar"><i style="width:${{p}}%"></i></span>
       Dogrulama icin ${{v.needed_snapshots}} anlik goruntu / ${{v.needed_days}} gun gerekiyor —
-      su an <b>${{v.snapshots || 0}}</b> goruntu, <b>${{v.span_days || 0}}</b> gun (%${{p}}).</p>
+      su an <b>${{v.snapshots || 0}}</b> goruntu, <b>${{v.span_days || 0}}</b> gun (%${{p}}).
+      ${{eta}}</p>
+      <p><b>Senin yapman gereken bir sey yok.</b> Sayaci gunluk tarama
+      ilerletiyor; her calisma bir anlik goruntu ekliyor. Tek sart bilgisayarin
+      gun icinde bir kez acik olmasi.</p>
     </div>`);
   }} else {{
     parts.push(`<div class="st ok"><b>DOGRULANDI</b>
@@ -634,10 +814,23 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
       ICIR <b>${{v.model.icir}}</b>. Agirlik, sizintisiz ileri yuruyuslu
       degerlendirmede olculen beceriyle orantilidir.</p></div>`);
   }} else {{
+    // Beklemenin alternatifi varsa soylenmeli: onbellekteki fiyat gecmisinden
+    // uretilmis panel, sayac dolmadan mimari denemeye izin verir.
+    const pt = v.pretrain;
+    const ptLine = pt
+      ? `<br>Beklemeden deneyebilirsin: gecmise donuk panel hazir —
+         <b>${{pt.snapshots}}</b> goruntu, <b>${{pt.tickers}}</b> hisse
+         (${{pt.first_date}} → ${{pt.last_date}})${{pt.partial ? ', uretim suruyor' : ''}}.
+         <code>python run.py ml train --pretrain</code>. Bu panel hayatta kalma
+         yanliligi tasidigi icin <b>sampiyon uretemez</b>; yalnizca hangi model
+         turunun sinyal yakaladigini gosterir.`
+      : `<br>Beklemeden denemek icin: <code>python run.py history</code> ile
+         onbellekteki fiyat gecmisinden gecmise donuk panel uretilebilir.`;
     parts.push(`<div class="st info"><b>OGRENILEN MODEL YOK</b>
       <p>Model, kanit olmadan skorlamaya <b>katilmaz</b>. Gunluk anlik
-      goruntuler biriktikce <code>python run.py ml train --promote</code>
-      calistirilabilir; yalnizca esikleri gecen model devreye girer.</p></div>`);
+      goruntuler yeterli sayiya ulasinca egitim <b>kendiliginden</b> baslar
+      (gunluk is her 5 taramada bir dener) ve yalnizca esikleri gecen model
+      devreye girer.${{ptLine}}</p></div>`);
   }}
 
   // Veri tazeligi
@@ -671,6 +864,141 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
       Siralama yalnizca gorulen kismi kapsar; her calistirmada evren tamamlanir.</p></div>`);
   }}
   document.getElementById('statusBar').innerHTML = parts.join('');
+}})();
+
+/* ---------- karne: kagit uzerinde defter ---------- */
+(function paperPanel() {{
+  const P = DATA.paper;
+  if (!P) return;
+  const box = document.getElementById('paperBody');
+  const sec = document.getElementById('secPaper');
+
+  const pct = v => (v == null ? '&mdash;' : (v > 0 ? '+' : '') + v.toFixed(2) + '%');
+
+  function card(s, title, note) {{
+    if (!s || !s.ok) {{
+      return `<div class="st info"><b>${{title}}</b><p>${{(s && s.reason) || 'veri yok'}}
+        ${{s && s.bekleyen ? ` (${{s.bekleyen}} pozisyon ufkunu bekliyor)` : ''}}</p></div>`;
+    }}
+    // Anlamlilik: t < 2 ise fark gurultuden ayirt edilemez. Bu satiri
+    // gizlemek, karneyi oldugundan guclu gostermek olurdu.
+    const tOk = s.t_stat != null && Math.abs(s.t_stat) >= 2;
+    const tTxt = s.t_stat == null
+      ? 'anlamlilik olculemedi (az kohort)'
+      : (tOk ? `t = ${{s.t_stat}} &rarr; <b>gurultuden ayirt edilebilir</b>`
+             : `t = ${{s.t_stat}} &rarr; <b>gurultuden ayirt EDILEMEZ</b>`);
+    return `<div class="st ${{tOk && s.excess_pct > 0 ? 'ok' : 'info'}}">
+      <b>${{title}}</b>
+      <p>${{note || ''}}</p>
+      <table class="mini"><tbody>
+        <tr><td>Donem</td><td>${{s.first_date}} &rarr; ${{s.last_date}}
+            (${{s.cohorts}} kohort, ${{s.positions}} pozisyon)</td></tr>
+        <tr><td>Ortalama getiri</td><td><b>${{pct(s.mean_pct)}}</b>
+            &nbsp; SPY ${{pct(s.bench_mean_pct)}}</td></tr>
+        <tr><td>Endeks farki</td><td><b>${{pct(s.excess_pct)}}</b>
+            &nbsp;(pozisyonlarin %${{s.excess_positive_pct}}'i endeksi yendi)</td></tr>
+        <tr><td>Isabet</td><td>%${{s.hit_rate_pct}} pozitif &middot;
+            kazanan ort ${{pct(s.avg_win_pct)}} &middot;
+            kaybeden ort ${{pct(s.avg_loss_pct)}}</td></tr>
+        <tr><td>Dagilim</td><td>en iyi ${{pct(s.best_pct)}} &middot;
+            en kotu ${{pct(s.worst_pct)}} &middot; std %${{s.std_pct}}</td></tr>
+        <tr><td>Anlamlilik</td><td>${{tTxt}}</td></tr>
+        ${{s.delisted_closed ? `<tr><td>Kote disi kapanan</td><td>${{s.delisted_closed}}
+            pozisyon son bilinen fiyattan kapatildi</td></tr>` : ''}}
+      </tbody></table>
+      ${{s.bias_warning ? `<p class="muted"><b>Uyari:</b> ${{s.bias_warning}}</p>` : ''}}
+    </div>`;
+  }}
+
+  const html = [
+    card(P.live, 'GERCEK TARAMALAR',
+         '28 parametrenin tamami, cezalar dahil. Yanlilik tasimaz; ama sistem yeni oldugu icin az kohort var.'),
+    card(P.panel, 'GECMISE DONUK PANEL (ust sinir)',
+         'Onbellekteki fiyat gecmisinden uretildi. Uzun donem gorunur ama sonuc oldugundan iyidir.'),
+  ];
+  box.innerHTML = html.join('');
+  sec.hidden = false;
+}})();
+
+/* ---------- parametre IC tablosu ---------- */
+(function icPanel() {{
+  const F = DATA.factorIC;
+  if (!F || !F.factors || !F.factors.length) return;
+  const rows = F.factors.slice().sort((a, b) => (b.ic_mean || 0) - (a.ic_mean || 0));
+
+  const verdict = ic => {{
+    const a = Math.abs(ic || 0);
+    if (a >= 0.10) return ['cok iyi', 'ok'];
+    if (a >= 0.05) return ['iyi', 'ok'];
+    if (a >= 0.03) return ['zayif ama kullanilabilir', 'info'];
+    return ['gurultu', 'warn'];
+  }};
+
+  const body = rows.map(r => {{
+    const [txt, cls] = verdict(r.ic_mean);
+    const neg = (r.ic_mean || 0) < 0;
+    return `<tr class="ic-${{cls}}">
+      <td>${{r.factor}}</td>
+      <td class="num">${{(r.ic_mean == null ? '—' : r.ic_mean.toFixed(4))}}</td>
+      <td class="num">${{(r.icir == null ? '—' : r.icir.toFixed(2))}}</td>
+      <td class="num">${{r.periods}}</td>
+      <td class="num">${{r.weight == null ? '—' : r.weight}}</td>
+      <td>${{neg ? '<b>ters yonde</b> &mdash; ' : ''}}${{txt}}</td>
+    </tr>`;
+  }}).join('');
+
+  document.getElementById('icBody').innerHTML = `
+    <p class="muted">Kaynak: <b>${{F.source === 'panel' ? 'gecmise donuk panel' : 'gercek taramalar'}}</b>
+      &middot; ufuk ${{F.horizon}} islem gunu &middot; ${{F.dates}} tarih,
+      ${{F.labeled_rows.toLocaleString('tr-TR')}} etiketli satir.<br>${{F.note_tr || ''}}</p>
+    <div class="tbl-scroll"><table class="mini wide"><thead><tr>
+      <th>Parametre</th><th class="num">IC</th><th class="num">ICIR</th>
+      <th class="num">Donem</th><th class="num">Agirlik</th><th>Yorum</th>
+    </tr></thead><tbody>${{body}}</tbody></table></div>
+    <p class="muted">Hicbir agirlik bu tabloya bakilarak <b>otomatik degistirilmez</b>.
+      Olcum bir oneridir; degisiklik senin kararindir.</p>`;
+  document.getElementById('secIC').hidden = false;
+}})();
+
+/* ---------- sistem sagligi ---------- */
+(function healthPanel() {{
+  const H = DATA.health || {{}};
+  const p = v => (v == null ? '—' : '%' + Math.round(v * 100));
+  const rows = [
+    ['Bu tarama', DATA.generatedAt || '—'],
+    ['Evren', `${{H.universeFull ?? '—'}} sembol &middot; ${{H.scored ?? '—'}} skorlandi`],
+    ['Cekim basarisi', `${{p(H.fetchRate)}}` +
+      (H.fallbackUsed ? ` (Yahoo ${{p(H.yahooRate)}} + yedek kaynaktan ${{H.fallbackUsed}})` : '')],
+    ['Hiz siniri', `${{H.rateLimited ?? 0}} ret${{H.aborted ? ' &middot; <b>devre kesici devreye girdi</b>' : ''}}`],
+    ['Evren kapsamasi', H.coveragePct != null ? `%${{H.coveragePct}} en az bir kez tarandi` : '—'],
+  ];
+  /* Veri tazeligi: siradaki her satir bugunun fiyatindan gelmiyor. Bunu
+     soylemek zorunlu — aksi halde iki haftalik fiyattan uretilmis bir sira
+     "bugunun siralamasi" gibi okunur. */
+  if (H.dataAge) {{
+    const a = H.dataAge;
+    const uyari = a.stale_over_7d > 0
+      ? ` &middot; <b>${{a.stale_over_7d}} satir 7+ gunluk veriden</b>` : '';
+    rows.push(['Veri tazeligi',
+      `${{a.fresh_today}} hisse bugun cekildi &middot; ${{a.stale_over_3d}} hisse
+       3+ gunluk &middot; medyan ${{a.median_days}} gun${{uyari}}`]);
+  }}
+  if (H.fundamentals && H.fundamentals.snapshots) {{
+    const f = H.fundamentals;
+    rows.push(['Temel veri arsivi',
+      `${{f.snapshots}} gun &middot; ${{f.rows_last}} hisse &middot; ${{f.mb}} MB
+       (${{f.first_date}} &rarr; ${{f.last_date}})`]);
+  }}
+  if (H.delisting) {{
+    rows.push(['Kote disi takibi',
+      `${{H.delisting.confirmed}} kesinlesti, ${{H.delisting.pending}} izleniyor
+       (${{H.delisting.confirm_days}} gun kurali)`]);
+  }}
+  document.getElementById('healthBody').innerHTML =
+    `<table class="mini"><tbody>` +
+    rows.map(r => `<tr><td>${{r[0]}}</td><td>${{r[1]}}</td></tr>`).join('') +
+    `</tbody></table>`;
+  document.getElementById('secHealth').hidden = false;
 }})();
 
 /* ---------- gunluk degisim ozeti ---------- */
