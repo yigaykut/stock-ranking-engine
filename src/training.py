@@ -258,47 +258,78 @@ def ensemble(results: dict[str, dict]) -> dict:
                 "models": sorted(usable)}
 
     names = sorted(usable)
-    n_folds = min(len(usable[n]["_predictions"]) for n in names)
-    if n_folds < 1:
-        return {"ok": False, "reason": "ortak katman yok"}
+
+    # KATMANLARI SIRAYLA ESLESTIRMEK YANLISTI (duzeltildi 04.09.2026).
+    # Dizi modeli, pencere kadar gecmisi olmayan gunleri dusuyor; bu yuzden
+    # ayni komutta ridge/mlp/attn 3 katman kurarken seq 2 katman kurabiliyor.
+    # Eski kod katmanlari INDEKSLE esliyordu -- seq'in 0. katmani ridge'in
+    # 0. katmaniyla eslesiyordu, oysa ikisi farkli zaman pencereleriydi.
+    # 04.09'daki dort modelli olcumde bu "hicbir katmanda ortak satir yok"
+    # diye patladi. Patlamasi sansti: pencereler KISMEN ortusseydi hata
+    # sessiz kalir ve topluluk, farkli donemlerin tahminlerini harmanlayarak
+    # anlamsiz ama makul gorunen bir sonuc uretirdi.
+    #
+    # Dogrusu: bir modelin katmanlari zaman olarak AYRIK, yani tahminleri tek
+    # havuzda (tarih, sembol) anahtariyla toplanabilir ve havuzdaki her satir
+    # o model icin ORNEKLEM DISIDIR. Once havuzlar kesistirilir, sonra ortak
+    # gunler zaman sirasina gore dilimlenir. Dilimler yalnizca DAGILIM
+    # (ICIR) hesabi icindir; hepsi ornek dISI oldugu icin bu mesru.
+    havuz: dict[str, dict[tuple, float]] = {}
+    truth: dict[tuple, float] = {}
+    for name in names:
+        acc: dict[tuple, float] = {}
+        for blk in usable[name]["_predictions"]:
+            ks = [tuple(k) for k in blk["keys"]]
+            acc.update(dict(zip(ks, blk["pred"])))
+            truth.update(dict(zip(ks, blk["y"])))
+        havuz[name] = acc
+
+    ortak = set.intersection(*(set(m) for m in havuz.values()))
+    if len(ortak) < 30:
+        return {"ok": False,
+                "reason": ("modellerin ornek disi satirlari ortusmuyor "
+                           f"({len(ortak)} ortak satir)"),
+                "common": len(ortak),
+                "per_model": {n: len(havuz[n]) for n in names}}
+
+    keys = sorted(ortak)
+    kdates = np.array([k[0] for k in keys])
+
+    # Once TUM ortak satirlarda gun ici yuzdelik siralar. Siralama gun
+    # icindedir; dilimleme sonradan yapilir ki dilim siniri siralamayi
+    # degistirmesin.
+    blended = np.zeros(len(keys), dtype=float)
+    for name in names:
+        vals = np.array([havuz[name][k] for k in keys], dtype=float)
+        ranked = np.zeros(len(keys), dtype=float)
+        for d in np.unique(kdates):
+            m = kdates == d
+            ranked[m] = _to_rank(vals[m])
+        blended += ranked
+    blended /= len(names)
+    y_all = np.array([truth[k] for k in keys], dtype=float)
+
+    gunler = np.unique(kdates)
+    n_dilim = min(min(len(usable[n]["_predictions"]) for n in names), len(gunler))
+    n_dilim = max(1, n_dilim)
 
     folds, fold_info = [], []
-    for fi in range(n_folds):
-        per_model: dict[str, dict] = {}
-        truth: dict[tuple, float] = {}
-        for name in names:
-            blk = usable[name]["_predictions"][fi]
-            keys = [tuple(k) for k in blk["keys"]]
-            per_model[name] = dict(zip(keys, blk["pred"]))
-            truth.update(dict(zip(keys, blk["y"])))
-
-        common = set.intersection(*(set(m) for m in per_model.values()))
-        if len(common) < 30:
-            fold_info.append({"fold": fi, "skipped": "ortak satir < 30",
-                              "common": len(common)})
+    for fi, parca in enumerate(np.array_split(gunler, n_dilim)):
+        if not len(parca):
             continue
-
-        keys = sorted(common)
-        kdates = np.array([k[0] for k in keys])
-        blended = np.zeros(len(keys), dtype=float)
-        # Yuzdelik siralar GUN ICINDE hesaplanir: karsilastirma capraz
-        # kesitseldir, gunler arasi degil.
-        for name in names:
-            vals = np.array([per_model[name][k] for k in keys], dtype=float)
-            ranked = np.zeros(len(keys), dtype=float)
-            for d in np.unique(kdates):
-                m = kdates == d
-                ranked[m] = _to_rank(vals[m])
-            blended += ranked
-        blended /= len(names)
-
-        y_te = np.array([truth[k] for k in keys], dtype=float)
-        ev = evaluate_predictions(blended, y_te, kdates)
+        m = np.isin(kdates, parca)
+        if int(m.sum()) < 30:
+            fold_info.append({"fold": fi, "skipped": "dilimde satir < 30",
+                              "common": int(m.sum())})
+            continue
+        ev = evaluate_predictions(blended[m], y_all[m], kdates[m])
         folds.append(ev)
-        fold_info.append({"fold": fi, "common": len(keys), **ev})
+        fold_info.append({"fold": fi, "common": int(m.sum()),
+                          "first_date": str(parca[0]), "last_date": str(parca[-1]),
+                          **ev})
 
     if not folds:
-        return {"ok": False, "reason": "hicbir katmanda ortak satir yok",
+        return {"ok": False, "reason": "hicbir dilimde yeterli ortak satir yok",
                 "folds": fold_info}
 
     ics = [f["ic_mean"] for f in folds if f.get("ic_mean") is not None]

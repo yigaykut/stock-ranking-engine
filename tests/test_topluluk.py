@@ -138,6 +138,84 @@ dec = tr.promotion_check(ens_pre)
 check("on egitim toplulugu TERFI EDEMEZ", dec["promote"] is False,
       "; ".join(dec["reasons"]))
 
+
+# ---------------------------------------------------------------------------
+# 4. KATMAN SAYISI FARKLI OLDUGUNDA — 04.09.2026'da bulunan hata
+#
+# Dizi modeli pencere kadar gecmisi olmayan gunleri dusurdugu icin ayni
+# komutta ridge 3 katman, seq 2 katman kurabiliyor. Eski kod katmanlari
+# INDEKSLE esliyordu: "a" modelinin 0. katmani ile "b" modelinin 0. katmani,
+# farkli zaman pencereleri olsalar bile eslesiyordu.
+#
+# Asagidaki kurulumda modeller AYNI gunleri kapsiyor ama katmanlara farkli
+# bolunmus. Dogru davranis: ortak satirlar bulunmali ve topluluk kurulmali.
+# Indeks eslemesi yapan kod burada ya hic ortak satir bulamaz ya da -- daha
+# kotusu -- farkli donemlerin tahminlerini harmanlar.
+# ---------------------------------------------------------------------------
+print()
+print("=" * 70)
+print("KATMAN SAYISI FARKLI MODELLER")
+print("=" * 70)
+
+
+def make_multi(bloklar):
+    """Birden cok katmanli walk_forward ciktisi."""
+    return {"ok": True, "horizon": 21, "rank_features": True,
+            "feature_names": ["a", "b"], "window": None, "pretrain": False,
+            "_predictions": [
+                {"fold": i, "keys": k, "pred": list(map(float, pr)),
+                 "y": list(map(float, yy))}
+                for i, (k, pr, yy) in enumerate(bloklar)]}
+
+
+G = [f"2026-03-{d:02d}" for d in range(1, 13)]          # 12 gun
+TK = [f"S{i:03d}" for i in range(50)]
+ANAHTAR = {g: [(g, t) for t in TK] for g in G}
+gercek = {g: rng.normal(0, 1, len(TK)) for g in G}
+tah_a = {g: gercek[g] + rng.normal(0, 1.5, len(TK)) for g in G}
+tah_b = {g: gercek[g] + rng.normal(0, 1.5, len(TK)) for g in G}
+
+
+def blok(model, gunler):
+    k, pr, yy = [], [], []
+    for g in gunler:
+        k += ANAHTAR[g]
+        pr += list(model[g])
+        yy += list(gercek[g])
+    return (k, pr, yy)
+
+
+# "a": 3 katman (4'er gun) · "b": 2 katman (6'sar gun) — ayni 12 gun
+a3 = make_multi([blok(tah_a, G[0:4]), blok(tah_a, G[4:8]), blok(tah_a, G[8:12])])
+b2 = make_multi([blok(tah_b, G[0:6]), blok(tah_b, G[6:12])])
+
+ens_mix = tr.ensemble({"a": a3, "b": b2})
+check("farkli katman sayilariyla topluluk kuruluyor", ens_mix.get("ok"),
+      str(ens_mix.get("reason") or ""))
+if ens_mix.get("ok"):
+    kapsanan = sum(f.get("common", 0) for f in ens_mix["fold_detail"]
+                   if "common" in f)
+    check("tum ortak satirlar kullaniliyor", kapsanan == len(G) * len(TK),
+          f"{kapsanan} / {len(G) * len(TK)}")
+    check("dilim sayisi en az katmanli modele uyuyor", ens_mix["folds"] <= 2,
+          f"{ens_mix['folds']} dilim")
+    check("topluluk IC'si pozitif", (ens_mix["ic_mean"] or 0) > 0,
+          str(ens_mix["ic_mean"]))
+    tarih_araliklari = [(f.get("first_date"), f.get("last_date"))
+                        for f in ens_mix["fold_detail"] if f.get("first_date")]
+    check("dilimler zaman sirasinda ve ayrik",
+          all(tarih_araliklari[i][1] < tarih_araliklari[i + 1][0]
+              for i in range(len(tarih_araliklari) - 1)),
+          str(tarih_araliklari))
+
+# Gunleri HIC ortusmeyen iki model: topluluk kurulmamali, sessizce yanlis
+# sonuc URETMEMELI.
+a_ilk = make_multi([blok(tah_a, G[0:6])])
+b_son = make_multi([blok(tah_b, G[6:12])])
+ens_ayrik = tr.ensemble({"a": a_ilk, "b": b_son})
+check("ortusmeyen donemlerde topluluk REDDEDILIYOR", not ens_ayrik.get("ok"),
+      str(ens_ayrik.get("reason")))
+
 print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
