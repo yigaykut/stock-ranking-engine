@@ -1539,19 +1539,40 @@ def cmd_ml(args: argparse.Namespace) -> int:
         # Taban cizgisi her zaman once ve her zaman dahil
         names = ["ridge"] + [n for n in names if n != "ridge"]
 
+        # Panel BIR KEZ kurulur, butun modeller ayni paneli kullanir.
+        # Etiketleme onbellekte olmayan semboller icin aga cikiyor; her model
+        # icin panel ayri kurulunca ayni ag isi model sayisi kadar tekrarliyordu
+        # (dort modelde saatler). Panel modele bagli degil; modele ozel tek is
+        # dizi modellerinin pencereye cevrilmesi ve o walk_forward icinde.
+        from src import dataset as _dsp
+        print()
+        print("Panel kuruluyor (etiketleme ag onbellegine bagli, "
+              "ilk kurulum uzun surebilir)...", flush=True)
+        ortak_panel, panel_bilgi = _dsp.load_panel(
+            horizon=args.horizon, use_cache=not args.no_cache, store=store,
+            min_rows_per_date=args.min_rows)
+        if ortak_panel is None:
+            print(f"HATA: panel kurulamadi - {panel_bilgi.get('reason')}",
+                  file=sys.stderr)
+            return 1
+        print(f"  {len(ortak_panel.y)} etiketli satir, "
+              f"{panel_bilgi.get('dates_usable')} kullanilabilir tarih, "
+              f"{panel_bilgi.get('features')} ozellik", flush=True)
+
         results: dict[str, dict] = {}
         for name in names:
             if name not in mz.AVAILABLE:
                 print(f"  ! bilinmeyen model atlandi: {name}")
                 continue
             print(f"\n>>> {name} egitiliyor (ufuk {args.horizon}, "
-                  f"{args.splits} katman, embargo {args.embargo})...")
+                  f"{args.splits} katman, embargo {args.embargo})...", flush=True)
             res = tr.walk_forward(name, horizon=args.horizon, n_splits=args.splits,
                                   embargo=args.embargo, window=args.window,
                                   use_cache=not args.no_cache, store=store,
                                   min_rows_per_date=args.min_rows,
                                   force=args.force,
-                                  collect_predictions=not args.no_ensemble)
+                                  collect_predictions=not args.no_ensemble,
+                                  panel=ortak_panel, panel_info=panel_bilgi)
             results[name] = res
             if not res.get("ok"):
                 print(f"    BASARISIZ: {res.get('reason')}")

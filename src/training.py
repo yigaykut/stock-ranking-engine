@@ -92,12 +92,21 @@ def walk_forward(model_name: str = "ridge", horizon: int = 21, n_splits: int = 5
                  embargo: int = 5, window: int = 10, use_cache: bool = True,
                  rank_features: bool = True, store: Path | None = None,
                  min_rows_per_date: int = 30, force: bool = False,
-                 collect_predictions: bool = False) -> dict:
+                 collect_predictions: bool = False,
+                 panel: "ds.Panel | None" = None,
+                 panel_info: dict | None = None) -> dict:
     """Bir modeli sizintisiz ileri yuruyusle egitir ve OOS degerlendirir.
 
     `store` verilirse egitim, canli feature store yerine o dizindeki panelden
     yapilir (gecmise donuk on egitim). Sonuc sozlugu bunu `store` alaninda
     tasir; terfi kararinda ayirt edilebilsin diye.
+
+    `panel` verilirse yeniden KURULMAZ. Dort modeli tek komutta olcerken bu
+    fark saatlerce: panel kurulumunun pahali kismi etiketleme ve etiketleme
+    ONBELLEKTE OLMAYAN sembollerde aga cikiyor. Ayni paneli dort kez kurmak,
+    ayni ag isini dort kez yapmak demekti. Panel modelden bagimsizdir --
+    modele ozel tek is, dizi modelleri icin pencereye cevirmek, o da zaten
+    asagida ayrica yapiliyor.
     """
     # `force`, CLI'daki --force ile ayni anlama gelir. Eskiden CLI kapiyi
     # aciyor ama burasi yine kapatiyordu; --force sessizce ise yaramiyordu.
@@ -105,8 +114,13 @@ def walk_forward(model_name: str = "ridge", horizon: int = 21, n_splits: int = 5
     if not ready["ready_to_train"] and not force:
         return {"ok": False, "reason": "yetersiz veri", "readiness": ready}
 
-    panel, info = ds.load_panel(horizon=horizon, use_cache=use_cache, store=store,
-                                min_rows_per_date=min_rows_per_date)
+    if panel is None:
+        panel, info = ds.load_panel(horizon=horizon, use_cache=use_cache,
+                                    store=store,
+                                    min_rows_per_date=min_rows_per_date)
+    else:
+        info = dict(panel_info or {})
+        info["reused"] = True
     if panel is None:
         return {"ok": False, "reason": info.get("reason", "panel kurulamadi"),
                 "readiness": ready, "panel_info": info}
