@@ -619,8 +619,15 @@ python tests/test_evren.py        # 17 — universe collapse, stale-cache recove
 python tests/test_topluluk.py     # 12 — ensemble blending and alignment
 python tests/test_otomasyon.py    #  9 — daily stage isolation
 python tests/test_kodlama.py      #  5 — source encoding guard
+python tests/test_kaynak_uyum.py  # 15 — provider shape contract, timezone join
+python tests/test_attn.py         # 14 — set behaviour, permutation equivariance
+python tests/test_kayip.py        # 18 — ranking loss, outlier insensitivity
+python tests/test_faktor_zaman.py # 30 — overlap-corrected t, decay, regime split
 node   tests/test_dashboard.js    # 28 — dashboard UI, real DOM
 ```
+
+They don't run under pytest — each file calls `sys.exit()`, which pytest treats
+as a collection error. Run them as scripts.
 
 The UI tests need jsdom:
 
@@ -656,7 +663,10 @@ src/
   paper.py              cohort ledger — what the top 20 actually did
   fundamentals.py       daily point-in-time fundamentals archive
   delisting.py          survivorship-bias ledger
-  regime.py             market regime: trend, breadth, volatility
+  regime.py             market regime: trend, breadth, volatility;
+                        back-labels past dates with the same rule
+  faktor_zaman.py       factor strength over time: overlap-corrected t,
+                        first-half vs second-half, regime split
   notify.py             alerts — file, desktop, optional Telegram
   backup.py             encrypted archive of the irreplaceable data
   publish.py            AES-256-GCM encryption
