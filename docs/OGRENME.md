@@ -222,6 +222,38 @@ diğerleri gibi reddedildi.
 
 ---
 
+### Dört model, aynı panel (04.09.2026)
+
+`attn` eklendikten ve kayıp fonksiyonu düzeltildikten sonraki ilk gerçek ölçüm.
+188.465 etiketli satır, 73 tarih, 21 gün ufuk:
+
+| Model | IC | ICIR | Katman | Dilim farkı |
+|---|---:|---:|---:|---:|
+| ridge (taban) | −0.0226 | −0.85 | 3 (1 pozitif) | +0.031 |
+| mlp | +0.0321 | +0.66 | 3 (2 pozitif) | +0.052 |
+| seq | **+0.0429** | +0.91 | 2 (2 pozitif) | +0.032 |
+| attn | +0.0307 | **+1.24** | 3 (**3 pozitif**) | +0.025 |
+
+18.08 ölçümüne göre üç model de yukarı gitti (ridge −0.053 → −0.023,
+mlp −0.032 → +0.032, seq +0.002 → +0.043). Arada iki şey değişti: kayıp
+fonksiyonunda hedef sıraya çevrildi, ve panel 12 gün daha uzadı. Hangisinin ne
+kadar katkı verdiği **ölçülmedi**; iki değişikliği aynı anda yapıp farkı tek
+bir sebebe yazmak yanlış olur.
+
+Doğrusal taban çizgisi negatif, üç sinir ağı da pozitif — paneldeki yapının
+doğrusal olmadığına dair ilk somut işaret. `seq`'in IC'si en yüksek ama iki
+katmanda. `attn` üç katmanın üçünde de pozitif ve ICIR'ı açık ara önde; terfi
+kapısının sorduğu şey de zaten büyüklük değil tutarlılık.
+
+Hiçbiri terfi etmiyor ve edemez: panel hayatta kalma yanlılığı taşıyor.
+
+**Maliyet notu.** `attn` diğer üçü dakikalar sürerken ~3 saat sürdü. Dikkat,
+gündeki hisse sayısında O(n²) ve burada bir gün 2.580 hisse — 256'lık
+parçalara bölünse bile. Canlı tahminde bu sorun değil (tek gün, tek geçiş),
+ama ileri yürüyüşlü eğitimde belirleyici.
+
+---
+
 ### Parametre bazlı ölçüm (17.08.2026)
 
 Model seviyesinden bir kat aşağısı: **hangi parametre işe yarıyor?** Aynı 73
@@ -259,6 +291,95 @@ Bu tablo artık panoda. **Hiçbir ağırlık otomatik değiştirilmiyor** — ö
 Uyarı: bu ölçüm geçmişe dönük panelden yapıldı; hayatta kalma yanlılığı taşır
 ve yalnızca fiyat türevi 11 parametreyi kapsar. Temel veri parametrelerinin IC
 ölçümü, `data/fundamentals` arşivi birikince mümkün olacak.
+
+---
+
+### Zaman ve rejim kırılımı (04.09.2026)
+
+Yukarıdaki tablo her parametre için **tek bir ortalama** veriyor. O sayı üç
+soruyu birden gizliyor ve ben o tabloyu üçüne birden cevap veriyormuş gibi
+okuyordum.
+
+**1. Ortalama sıfırdan gerçekten farklı mı?**
+
+Etiket 21 işlem günü ileri getiri, görüntüler ~3 günde bir. Yani ardışık ~9
+ölçüm aynı gelecek dönemin parçalarını paylaşıyor — bağımsız değiller. Sıradan
+`t = ort/(std/√n)` bunu 73 bağımsız gözlem sanar ve t'yi şişirir. Newey-West
+(Bartlett çekirdeği, gecikme gerçek görüntü aralığından) düzeltiyor.
+
+Ve düzeltme tam da en iyi görünen parametrenin kararını değiştiriyor:
+
+| Parametre | ham t | düzeltilmiş t |
+|---|---:|---:|
+| momentum_persistence | **2.20** | **1.26** |
+| breakout_setup | −1.96 | −1.10 |
+| stage2_breakout | 1.43 | 0.83 |
+
+**11 parametrenin hiçbiri |t| ≥ 2 eşiğini geçmiyor.** Düzeltme olmasaydı
+`momentum_persistence` yanlışlıkla anlamlı görünecekti.
+
+**2. Gücü azalıyor mu?**
+
+Dönemi ikiye böldüm. Sonuç tek tek parametrelerden çok daha çarpıcı:
+
+| Parametre | 1. yarı | 2. yarı |
+| --- | ---: | ---: |
+| momentum_persistence | +0.0564 | −0.0025 |
+| trend_structure | +0.0476 | −0.0146 |
+| chart_position | +0.0417 | −0.0150 |
+| relative_strength | +0.0386 | −0.0448 |
+| stage2_breakout | +0.0340 | +0.0016 |
+| technical_oscillators | +0.0221 | −0.0323 |
+| price_momentum_12_1 | +0.0168 | −0.0214 |
+
+Tek tek bakınca "gürültü". Hep birlikte bakınca bir **desen**: trend/momentum
+ailesinin tamamı ilk yarıda çalışmış, ikinci yarıda durmuş veya tersine
+dönmüş.
+
+Bu yedinin altısı zaten `trend` korelasyon kümesinde ve o kümenin bütçesi
+yapılandırılmış toplamının **%40'ına** kısılıyor. Yani skordaki gerçek payları,
+config'in istediğinin yarısından az. Korelasyon bütçesi, tam da bu koşuda
+beraber yön değiştirdiği ölçülen aileyi zaten baskılıyormuş — mekanizma bunu
+bilmeden, sadece "birlikte hareket ediyorlar" diye yapıyordu.
+
+(Parametre bazlı ağırlık değerleri bu dosyada yok; README'nin kendi kuralı
+"ağırlıklar özeldir" diyor. Ağırlığın bulguya etkisi olduğu yerde göreli
+olarak anlatılıyor.)
+
+Bu hâlâ tek bir 11 aylık pencere ve kanıt değil. Ama "hangi ağırlık önemli"
+sorusunun cevabının tek bir ortalamada aranamayacağının kanıtı.
+
+**3. Hangi ortamda çalışıyor?**
+
+Rejim etiketinin geçmişe dönük üretilebildiği ortaya çıktı. Modülün kendi notu
+"sonradan yeniden üretilemez" diyor — bu **genişlik** için doğru, **etiket**
+için değil: etiket kuralı sadece endeksin kendi fiyat geçmişine bakıyor,
+genişlik yalnızca açıklama metnine uyarı ekliyor. Panelin 73 tarihi canlı
+taramayla aynı kuralla etiketlendi.
+
+| Parametre | YÜKSELİŞ (57 gün) | GEÇİŞ (16 gün) |
+| --- | ---: | ---: |
+| momentum_persistence | +0.0280 | +0.0212 |
+| stage2_breakout | +0.0263 | −0.0134 |
+| trend_structure | +0.0196 | +0.0037 |
+| risk_drawdown | +0.0175 | −0.0474 |
+| technical_oscillators | +0.0065 | −0.0482 |
+| breakout_setup | −0.0107 | **−0.0707** |
+| price_momentum_12_1 | −0.0167 | +0.0479 |
+
+Ders kitabındaki desen: kırılım ve trend parametreleri yükselişte kazanıyor,
+trend kırılınca geri veriyor. `breakout_setup` config'in en ağır dört parametresinden biri ve geçiş
+rejiminde −0.0707 — ölçülen en büyük tek etki, ve yanlış yönde.
+`momentum_persistence` iki ortamda da benzer davranan tek parametre.
+
+**Ve en önemli sınır: bu pencerede hiç düşüş rejimi yok.** 57 yükseliş, 16
+geçiş, 0 düşüş. Trend ağırlıklı bir sistemde en kritik soru tam da o, ve bu
+veri ona cevap vermiyor. Panel 2025-09 ile 2026-07 arasını kapsıyor; o
+aralıkta endeks 200 günlük ortalamasının altına hiç düşmemiş.
+
+**Hiçbir ağırlık bu tabloya bakılarak otomatik değiştirilmiyor.** Ölçüm bir
+öneridir. Tablo panoda, özeti `scripts/durum.py` çıktısında, ham hâli
+`data/faktor_zaman.json` içinde.
 
 ---
 

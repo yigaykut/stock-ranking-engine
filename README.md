@@ -559,13 +559,38 @@ for real forward snapshots.
 ### What state it's in
 
 ```
-live snapshots : 2 / 60      span : 1 / 120 days      progress : 0.8%
+live snapshots : 14 / 60     span : 24 / 120 days     progress : 20%
 ready to train : no
 ```
 
 Training on live data is blocked until there's enough of it, and that's
 deliberate. A model trained on a few days produces confident-looking numbers
 fitted entirely to noise, and you find out it's wrong after losing money.
+
+### All four measured on the reconstructed panel
+
+188,465 labelled rows, 73 dates, 21-day horizon, purged walk-forward:
+
+| Model | IC | ICIR | folds | decile spread |
+|---|---:|---:|---:|---:|
+| ridge (baseline) | −0.0226 | −0.85 | 3 (1 positive) | +0.031 |
+| mlp | +0.0321 | +0.66 | 3 (2 positive) | +0.052 |
+| seq | **+0.0429** | +0.91 | 2 (2 positive) | +0.032 |
+| attn | +0.0307 | **+1.24** | 3 (**3 positive**) | +0.025 |
+
+The linear baseline is negative and all three networks are positive, which is
+the first concrete hint that whatever structure is in this panel isn't linear.
+`seq` has the highest IC but on two folds, one of them marginal. `attn` is
+positive on all three and has the best ICIR by a wide margin — and consistency,
+not size, is what the promotion gate actually asks for.
+
+None of it promotes anything. The panel carries survivorship bias, the fold
+counts are small, and the promotion gate refuses pretrain results by
+construction. This is an architecture comparison, not a result.
+
+`attn` is also expensive: attention is O(n²) in the number of stocks in a day,
+and a day here is ~2,580 stocks even chunked at 256. It took roughly three
+hours where the other three took minutes.
 
 ```bash
 python tests/test_ml.py         # 29 — pipeline correctness, synthetic data
@@ -758,22 +783,77 @@ that warning attached to the second one.
 ## Do the parameters work?
 
 Same question, one level down. Information Coefficient is the rank correlation
-between a parameter's score and the stock's forward return. Over 73 dates:
+between a parameter's score and the stock's forward return. One average per
+parameter over 73 dates was the whole answer for a while, and it turned out to
+be three questions wearing one number.
 
-| Parameter | IC | Reading |
-|---|---:|---|
-| momentum_persistence | +0.0262 | best of the set, still noise |
-| stage2_breakout | +0.0174 | noise |
-| trend_structure | +0.0157 | noise |
-| nominal_price_fit | −0.0173 | wrong direction |
-| breakout_setup | −0.0234 | wrong direction |
+**Is the average different from zero?** The labels are 21-day forward returns
+sampled every ~3 days, so about nine consecutive readings share the same future
+window. They are not independent, and the usual `t = mean/(std/√n)` assumes
+they are. Newey-West with a Bartlett kernel fixes it, and the lag comes from
+the actual snapshot spacing:
 
-The convention is |IC| > 0.03 for "weak but usable". Nothing clears it. Two
-parameters point the wrong way — `breakout_setup` is one of the four heaviest
-in the config and appears to be actively unhelpful over this window.
+| Parameter | naive t | corrected t |
+| --- | ---: | ---: |
+| momentum_persistence | **2.20** | **1.26** |
+| breakout_setup | −1.96 | −1.10 |
+| stage2_breakout | 1.43 | 0.83 |
+| trend_structure | 1.43 | 0.81 |
 
-This table is now on the dashboard. Nothing is auto-adjusted from it: the
-measurement is a suggestion, changing weights is the user's call.
+None of the 11 clear |t| ≥ 2. Without the correction `momentum_persistence`
+would have read as significant.
+
+**Is it fading?** Split the window in half and a pattern shows up that no
+single parameter shows on its own:
+
+| Parameter | first half | second half |
+| --- | ---: | ---: |
+| momentum_persistence | +0.0564 | −0.0025 |
+| trend_structure | +0.0476 | −0.0146 |
+| chart_position | +0.0417 | −0.0150 |
+| relative_strength | +0.0386 | −0.0448 |
+| stage2_breakout | +0.0340 | +0.0016 |
+| technical_oscillators | +0.0221 | −0.0323 |
+| price_momentum_12_1 | +0.0168 | −0.0214 |
+
+The whole trend/momentum family earns in the first half and gives it back in
+the second. Six of the seven are already in the `trend` correlation cluster,
+whose budget gets scaled down to about 40% of its configured total, so their
+applied share of the score is well under half what the config asks for. The
+correlation budget was already damping exactly this family, without knowing any
+of this — it only knew they move together.
+
+(Per-parameter weights stay out of this file, same as everywhere else. Where
+weight matters to a finding it's described in relative terms.)
+
+**Does it only work in one kind of market?** Regime labels turn out to be
+reconstructable for past dates: the rule reads only the index's own price
+history, and breadth never enters the label, only the warning text. So the 73
+panel dates get the same label the live scan would have given them.
+
+| Parameter | rising (57d) | transitional (16d) |
+| --- | ---: | ---: |
+| momentum_persistence | +0.0280 | +0.0212 |
+| stage2_breakout | +0.0263 | −0.0134 |
+| risk_drawdown | +0.0175 | −0.0474 |
+| technical_oscillators | +0.0065 | −0.0482 |
+| breakout_setup | −0.0107 | **−0.0707** |
+| price_momentum_12_1 | −0.0167 | +0.0479 |
+
+Breakout and trend parameters earn while the trend holds and give it back when
+it doesn't. `breakout_setup` is one of the four heaviest parameters in the
+config and it posts the largest single effect in the table, in the wrong
+direction. `momentum_persistence` is the only one that behaves about the same
+in both.
+
+And the limit that matters most: **the window contains no falling market at
+all** — 57 rising days, 16 transitional, zero down. The index never went below
+its 200-day average between 2025-09 and 2026-07. For a system this weighted
+toward trend, that's the case you'd most want measured, and it isn't here.
+
+Nothing is auto-adjusted from any of this. The measurement is a suggestion;
+changing weights is the user's call. Table on the dashboard, summary in
+`scripts/durum.py`, raw output in `data/faktor_zaman.json`.
 
 ```bash
 python run.py learn --pretrain      # measure against reconstructed history
