@@ -411,6 +411,35 @@ trend kırılınca geri veriyor. `breakout_setup` config'in en ağır dört para
 rejiminde −0.0707 — ölçülen en büyük tek etki, ve yanlış yönde.
 `momentum_persistence` iki ortamda da benzer davranan tek parametre.
 
+**4. Ufuk değiştirince ne oluyor?**
+
+Etiket ufku, düzeltmenin ne kadar ısırdığını da belirliyor: 21 günde ~9 ölçüm
+örtüşüyor, 5 günde ~2. Yani aynı 73 tarihten kısa ufukta daha çok kullanılabilir
+kanıt çıkıyor.
+
+| Parametre | 5g IC | 5g t | 21g IC | 21g t |
+|---|---:|---:|---:|---:|
+| trend_structure | +0.0238 | **1.34** | +0.0161 | 0.81 |
+| momentum_persistence | +0.0264 | **1.33** | +0.0265 | 1.26 |
+| chart_position | +0.0196 | 1.11 | +0.0129 | 0.68 |
+| price_momentum_12_1 | +0.0138 | 0.80 | −0.0026 | −0.11 |
+| relative_strength | +0.0142 | 0.77 | −0.0036 | −0.16 |
+| technical_oscillators | +0.0015 | 0.09 | −0.0055 | −0.33 |
+| breakout_setup | −0.0117 | −0.63 | −0.0239 | −1.10 |
+
+Bütün trend parametreleri 5 günde pozitif. Üçü 21 güne gelindiğinde negatife
+dönüyor. Yarı yarıya yön değiştiren parametre sayısı da 8'den 5'e iniyor.
+
+Okuma: bu parametrelerin yakaladığı şey **kısa ufukta yaşıyor** ve üç haftaya
+kadar sönüyor ya da tersine dönüyor. İkisinde de |t| ≥ 2 eşiğini geçen yok, ama
+"nerede bakmalı" sorusunun cevabı belli: kısa ufuk.
+
+Bu iki ölçüm artık üst üste yazmıyor — `data/faktor_zaman_h5.json` ve
+`faktor_zaman_h21.json` ayrı duruyor, panonun okuduğu kanonik dosya en son
+koşanı gösteriyor ve içinde hangi ufuk olduğunu taşıyor. (Bu ayrımı ilk
+sürümde yapmamıştım; 5 günlük ölçüm 21 günlüğün üzerine yazdı ve veri
+kayboldu.)
+
 **Ve en önemli sınır: bu pencerede hiç düşüş rejimi yok.** 57 yükseliş, 16
 geçiş, 0 düşüş. Trend ağırlıklı bir sistemde en kritik soru tam da o, ve bu
 veri ona cevap vermiyor. Panel 2025-09 ile 2026-07 arasını kapsıyor; o

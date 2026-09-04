@@ -292,21 +292,51 @@ def _notlar(rows: list, rejim_sayim: dict, source: str) -> list[str]:
     return out
 
 
+def _ufuk_yolu(horizon: int) -> Path:
+    return DATA / f"faktor_zaman_h{int(horizon)}.json"
+
+
 def save(payload: dict, path: Path | None = None) -> Path:
+    """Analizi diske yazar.
+
+    IKI DOSYA: ufka ozel arsiv + "en son kosan" kopyasi.
+
+    Tek dosya yeterli degildi. 04.09'da 5 gunluk ufku olcunce 21 gunluk
+    analizin uzerine yazildi ve o veri kayboldu -- oysa ikisi FARKLI sorulari
+    cevapliyor ve yan yana okunmalari gerekiyor (kisa ufukta parametreler daha
+    az yon degistiriyor, bu tek basina bir bulgu). Ufka ozel dosya arsivdir;
+    panonun okudugu kanonik dosya her zaman en son kosani gosterir ve kendi
+    icinde hangi ufuk oldugunu tasir.
+    """
     p = path or CIKTI
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, ensure_ascii=False, indent=1), encoding="utf-8")
+    govde = json.dumps(payload, ensure_ascii=False, indent=1)
+    p.write_text(govde, encoding="utf-8")
+    if path is None and payload.get("horizon"):
+        _ufuk_yolu(payload["horizon"]).write_text(govde, encoding="utf-8")
     return p
 
 
-def load(path: Path | None = None) -> dict | None:
-    p = path or CIKTI
+def load(path: Path | None = None, horizon: int | None = None) -> dict | None:
+    """horizon verilirse o ufkun arsivi, verilmezse en son kosan analiz."""
+    p = path or (_ufuk_yolu(horizon) if horizon else CIKTI)
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def kayitli_ufuklar() -> list[int]:
+    """Arsivde hangi ufuklarin analizi var."""
+    out = []
+    for f in DATA.glob("faktor_zaman_h*.json"):
+        try:
+            out.append(int(f.stem.split("_h")[-1]))
+        except ValueError:
+            continue
+    return sorted(out)
 
 
 # =============================================================================

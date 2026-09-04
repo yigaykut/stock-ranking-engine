@@ -882,9 +882,30 @@ all** — 57 rising days, 16 transitional, zero down. The index never went below
 its 200-day average between 2025-09 and 2026-07. For a system this weighted
 toward trend, that's the case you'd most want measured, and it isn't here.
 
+**Same parameters at a 5-day horizon.** The label horizon changes how much of
+the correction applies: at 21 days about nine readings overlap, at 5 days about
+two, so the short horizon gives more usable evidence out of the same 73 dates.
+
+| Parameter | 5d IC | 5d t | 21d IC | 21d t |
+|---|---:|---:|---:|---:|
+| trend_structure | +0.0238 | **1.34** | +0.0161 | 0.81 |
+| momentum_persistence | +0.0264 | **1.33** | +0.0265 | 1.26 |
+| chart_position | +0.0196 | 1.11 | +0.0129 | 0.68 |
+| price_momentum_12_1 | +0.0138 | 0.80 | −0.0026 | −0.11 |
+| relative_strength | +0.0142 | 0.77 | −0.0036 | −0.16 |
+| technical_oscillators | +0.0015 | 0.09 | −0.0055 | −0.33 |
+| breakout_setup | −0.0117 | −0.63 | −0.0239 | −1.10 |
+
+Every trend parameter is positive at 5 days. Three of them are negative by 21.
+Sign flips between halves drop from 8 to 5. Whatever these parameters are
+catching seems to live at short horizons and decay or reverse by three weeks —
+which matters, because the watchlist targets are set on a longer clock than
+that. Still nothing clears |t| ≥ 2 at either horizon.
+
 Nothing is auto-adjusted from any of this. The measurement is a suggestion;
 changing weights is the user's call. Table on the dashboard, summary in
-`scripts/durum.py`, raw output in `data/faktor_zaman.json`.
+`scripts/durum.py`, raw output in `data/faktor_zaman.json` with a per-horizon
+archive beside it (`faktor_zaman_h5.json`, `faktor_zaman_h21.json`).
 
 ```bash
 python run.py learn --pretrain      # measure against reconstructed history

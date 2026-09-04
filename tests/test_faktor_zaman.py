@@ -219,6 +219,26 @@ with tempfile.TemporaryDirectory() as td:
           geri["factors"][0]["factor"] == out["factors"][0]["factor"])
     check("okunamayan dosyada None doner", fz.load(Path(td) / "yok.json") is None)
 
+# Ufka ozel arsiv: 5 gunluk olcum 21 gunlugun uzerine YAZMAMALI.
+# 04.09'da tam bu oldu ve 21 gunluk analiz kayboldu.
+eski_data, eski_cikti = fz.DATA, fz.CIKTI
+with tempfile.TemporaryDirectory() as td:
+    fz.DATA = Path(td)
+    fz.CIKTI = Path(td) / "faktor_zaman.json"
+    try:
+        h21 = dict(out, horizon=21)
+        h5 = dict(out, horizon=5)
+        fz.save(h21)
+        fz.save(h5)
+        check("kanonik dosya en son kosani gosteriyor", fz.load()["horizon"] == 5)
+        check("21 gunluk arsiv duruyor", fz.load(horizon=21)["horizon"] == 21)
+        check("5 gunluk arsiv duruyor", fz.load(horizon=5)["horizon"] == 5)
+        check("kayitli ufuklar listeleniyor", fz.kayitli_ufuklar() == [5, 21],
+              str(fz.kayitli_ufuklar()))
+        check("olmayan ufukta None", fz.load(horizon=63) is None)
+    finally:
+        fz.DATA, fz.CIKTI = eski_data, eski_cikti
+
 print()
 fz.print_table(out)
 
