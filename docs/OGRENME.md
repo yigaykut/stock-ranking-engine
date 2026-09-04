@@ -299,7 +299,7 @@ Model seviyesinden bir kat aşağısı: **hangi parametre işe yarıyor?** Aynı
 tarih, 188.777 etiketli satır, 21 günlük ufuk:
 
 | Parametre | IC | ICIR |
-| ----------- | ---: | -----: |
+|-----------|---:|-----:|
 | momentum_persistence | +0.0262 | 0.25 |
 | stage2_breakout | +0.0174 | 0.17 |
 | trend_structure | +0.0157 | 0.16 |
@@ -362,7 +362,7 @@ Ve düzeltme tam da en iyi görünen parametrenin kararını değiştiriyor:
 Dönemi ikiye böldüm. Sonuç tek tek parametrelerden çok daha çarpıcı:
 
 | Parametre | 1. yarı | 2. yarı |
-| --- | ---: | ---: |
+|---|---:|---:|
 | momentum_persistence | +0.0564 | −0.0025 |
 | trend_structure | +0.0476 | −0.0146 |
 | chart_position | +0.0417 | −0.0150 |
@@ -397,7 +397,7 @@ genişlik yalnızca açıklama metnine uyarı ekliyor. Panelin 73 tarihi canlı
 taramayla aynı kuralla etiketlendi.
 
 | Parametre | YÜKSELİŞ (57 gün) | GEÇİŞ (16 gün) |
-| --- | ---: | ---: |
+|---|---:|---:|
 | momentum_persistence | +0.0280 | +0.0212 |
 | stage2_breakout | +0.0263 | −0.0134 |
 | trend_structure | +0.0196 | +0.0037 |

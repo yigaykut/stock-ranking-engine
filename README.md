@@ -825,7 +825,7 @@ they are. Newey-West with a Bartlett kernel fixes it, and the lag comes from
 the actual snapshot spacing:
 
 | Parameter | naive t | corrected t |
-| --- | ---: | ---: |
+|---|---:|---:|
 | momentum_persistence | **2.20** | **1.26** |
 | breakout_setup | −1.96 | −1.10 |
 | stage2_breakout | 1.43 | 0.83 |
@@ -838,7 +838,7 @@ would have read as significant.
 single parameter shows on its own:
 
 | Parameter | first half | second half |
-| --- | ---: | ---: |
+|---|---:|---:|
 | momentum_persistence | +0.0564 | −0.0025 |
 | trend_structure | +0.0476 | −0.0146 |
 | chart_position | +0.0417 | −0.0150 |
@@ -863,7 +863,7 @@ history, and breadth never enters the label, only the warning text. So the 73
 panel dates get the same label the live scan would have given them.
 
 | Parameter | rising (57d) | transitional (16d) |
-| --- | ---: | ---: |
+|---|---:|---:|
 | momentum_persistence | +0.0280 | +0.0212 |
 | stage2_breakout | +0.0263 | −0.0134 |
 | risk_drawdown | +0.0175 | −0.0474 |
