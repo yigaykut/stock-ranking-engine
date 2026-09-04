@@ -458,15 +458,42 @@ Bu ayrım, hangi parametrenin **neden** çalıştığını anlamanın en kestirm
 
 ## Kayıp fonksiyonu neden sıralama?
 
-Hedef **sıralamadır, seviye değil.** Kayıp fonksiyonu çapraz kesitsel
-sıralamayı optimize eder (Spearman'a türevlenebilir vekil).
+Hedef **sıralamadır, seviye değil.** Eğitim **gün bazlı** yapılır — her yığın
+bir günün tüm hisseleridir. Sıralama ancak aynı gün içindeki hisseler arasında
+anlamlıdır.
 
 Ham getiriyi MSE ile kestirmek, birkaç aykırı hissenin modeli ele geçirmesine
 yol açar: %300 sıçrayan tek bir hisse, kaybın büyük kısmını oluşturur ve model
-o tek örneği açıklamaya çalışır. Sıralama kaybı bundan etkilenmez.
+o tek örneği açıklamaya çalışır.
 
-Eğitim **gün bazlı** yapılır — her yığın bir günün tüm hisseleridir. Sıralama
-ancak aynı gün içindeki hisseler arasında anlamlıdır.
+### Düzeltme (04.09.2026) — "Spearman vekili" değildi
+
+Kayıp, tahmin ile **ham getiri** arasındaki korelasyondu ve koda "Spearman'a
+türevlenebilir vekil" diye yazılmıştı. Bu doğru değildi: ham getiriyle alınan
+korelasyon **Pearson**'dur. Ortalama çıkarıp standart sapmaya bölmek **ölçeği**
+düzeltir, **çarpıklığı** düzeltmez — %300 sıçrayan hisse standartlaştırmadan
+sonra da +8 sigma'da durur ve o günün kaybının büyük kısmını tek başına
+belirler. Yani modülün kaçınmak için yazıldığı sorun, hafifleyerek de olsa
+duruyordu.
+
+Şimdi **hedef gün içinde sıraya çevriliyor** (`_to_rank_tensor`, [-1, 1]
+aralığına yayılmış). En iyi hisse artık "%300 yapan" değil, "1. sıradaki".
+
+Tam Spearman değil ve olamaz: tahmin tarafını da sıralamak gerekirdi ama
+`argsort` türevlenemez, gradyan ölürdü. Yani
+
+> kayıp = −Pearson(tahmin, hedefin sırası)
+
+Ölçülen fark gerçek Spearman'a ~0.02 (`tests/test_kayip.py`, 4. bölüm).
+Aykırı değer sorunu ise tamamen çözülüyor: en yüksek getirili hissenin
+getirisini %3'ten %300'e çıkarmak — sırası değişmediği için — sıra kaybını
+**hiç** oynatmıyor (ölçülen fark 0.00e+00), aynı değişiklik Pearson kaybını
+0.0534 oynatıyor.
+
+Sentetik ağır kuyruklu hedefte üç tohum ortalaması: sıra kaybı IC +0.4634,
+Pearson kaybı +0.4580. Küçük ama tutarlı. Gerçek panelde ölçüm ayrı.
+
+Karşılaştırma yapılabilsin diye eski davranış duruyor: `models.RANK_TARGET`.
 
 ---
 

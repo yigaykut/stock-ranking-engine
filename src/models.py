@@ -129,16 +129,64 @@ class RidgeRanker(BaseModel):
 # =============================================================================
 #  Torch ortak egitim dongusu
 # =============================================================================
-def _rank_loss(pred: "torch.Tensor", target: "torch.Tensor") -> "torch.Tensor":
+# Kayip fonksiyonunda hedefin SIRAYA cevrilip cevrilmeyecegi.
+# True: Spearman vekili (varsayilan)  ·  False: eski Pearson vekili.
+# Karsilastirma yapabilmek icin sabit olarak duruyor (bkz. tests/test_kayip.py).
+RANK_TARGET = True
+
+
+def _to_rank_tensor(t: "torch.Tensor") -> "torch.Tensor":
+    """Bir gunun hedeflerini [-1, 1] araligina yayilmis SIRALARA cevirir.
+
+    Hedef parametrelerden bagimsiz oldugu icin burada turev sorunu yok;
+    argsort'un turevlenemez olmasi onemli degil.
+    """
+    n = t.numel()
+    if n < 2:
+        return t * 0
+    r = torch.empty(n, dtype=t.dtype, device=t.device)
+    r[t.argsort()] = torch.arange(n, dtype=t.dtype, device=t.device)
+    return (r / (n - 1)) * 2.0 - 1.0
+
+
+def _rank_loss(pred: "torch.Tensor", target: "torch.Tensor",
+               rank_target: bool | None = None) -> "torch.Tensor":
     """Capraz kesitsel siralama kaybi.
 
     Gun icinde hem tahmini hem hedefi standartlastirip negatif korelasyonu
-    dondurur. Bu, Spearman'i dogrudan optimize etmeye en yakin turevlenebilir
-    vekildir ve aykiri getirilerden MSE'ye gore cok daha az etkilenir.
+    dondurur.
+
+    HEDEF SIRAYA CEVRILIR (04.09.2026). Onceki surum ham getiriyle korelasyon
+    aliyordu ve buna "Spearman vekili" diyordu; oysa ham getiriyle alinan
+    korelasyon PEARSON'dur. Ortalama cikarip standart sapmaya bolmek olcegi
+    duzeltir, CARPIKLIGI duzeltmez: %300 sicrayan tek bir hisse
+    standartlastirmadan sonra da ~+8 sigma'da durur ve o gunun kaybinin buyuk
+    kismini tek basina belirler. Modul zaten "aykiri getiriler modeli ele
+    gecirmesin" diye siralama kaybi kullaniyordu; hedefi siraya cevirmek o
+    amaci gercekten yerine getiriyor -- en iyi hisse artik "1. sirada", "%300
+    yapan" degil.
+
+    TAM SPEARMAN DEGIL: yalnizca HEDEF siraya cevrilir, tahmin tarafi surekli
+    kalir. Tahmini de siralamak gerekirdi ama argsort turevlenemez, gradyan
+    olurdu. Yani kayip = -Pearson(tahmin, hedefin sirasi). Aykiri getiri
+    sorununu tamamen cozer (hedef tarafinda aykiri deger kalmaz), gercek
+    Spearman'a da yakin durur -- olculen fark ~0.02 (tests/test_kayip.py).
+
+    Bu, siralama ogrenmesi yazininin capraz kesitsel hisse siralamasinda
+    noktasal (MSE/MAE) kayiplar yerine siralama-farkindali kayiplari onermesiyle
+    de ayni yonde.
     """
+    if rank_target is None:
+        rank_target = RANK_TARGET
+    tgt = _to_rank_tensor(target) if rank_target else target
     p = pred - pred.mean()
-    t = target - target.mean()
-    ps, ts = p.std(), t.std()
+    t = tgt - tgt.mean()
+    # unbiased=False: kovaryans .mean() ile (n'e bolerek) hesaplaniyor; standart
+    # sapma da ayni bolenle alinmazsa sonuc (n-1)/n kadar kayar. Gunler farkli
+    # buyuklukte oldugu icin bu kayma her gun biraz farkli olur -- kucuk ama
+    # gereksiz bir tutarsizlik. Bu haliyle kayip tam olarak
+    # -Pearson(tahmin, hedefin sirasi).
+    ps, ts = p.std(unbiased=False), t.std(unbiased=False)
     if ps < 1e-8 or ts < 1e-8:
         return (p * 0).sum()
     return -(p * t).mean() / (ps * ts)
