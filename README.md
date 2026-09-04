@@ -575,22 +575,34 @@ fitted entirely to noise, and you find out it's wrong after losing money.
 |---|---:|---:|---:|---:|
 | ridge (baseline) | −0.0226 | −0.85 | 3 (1 positive) | +0.031 |
 | mlp | +0.0321 | +0.66 | 3 (2 positive) | +0.052 |
-| seq | **+0.0429** | +0.91 | 2 (2 positive) | +0.032 |
-| attn | +0.0307 | **+1.24** | 3 (**3 positive**) | +0.025 |
+| seq | +0.0429 | +0.91 | 2 (2 positive) | +0.032 |
+| attn | +0.0307 | +1.24 | 3 (3 positive) | +0.025 |
 
-The linear baseline is negative and all three networks are positive, which is
-the first concrete hint that whatever structure is in this panel isn't linear.
-`seq` has the highest IC but on two folds, one of them marginal. `attn` is
-positive on all three and has the best ICIR by a wide margin — and consistency,
-not size, is what the promotion gate actually asks for.
+**Treat the three network rows as provisional.** Running the same command a
+second time on the identical panel gave mlp +0.0181 instead of +0.0321. ridge
+matched exactly both times, which is what pointed at the cause: training wasn't
+actually seeded. `torch.manual_seed` was called inside the training loop, but
+the network is built before that in `fit()`, so weight initialisation used
+whatever state the global generator happened to be in. The batch shuffle used
+the unseeded global numpy generator too.
 
-None of it promotes anything. The panel carries survivorship bias, the fold
-counts are small, and the promotion gate refuses pretrain results by
-construction. This is an architecture comparison, not a result.
+Both are fixed and locked down by `tests/test_tekrarlanabilirlik.py`, which
+checks that two fits with the same seed are bit-identical, that changing the
+seed changes the result, and that corrupting the global generators beforehand
+changes nothing. A clean re-measurement is running.
 
-`attn` is also expensive: attention is O(n²) in the number of stocks in a day,
-and a day here is ~2,580 stocks even chunked at 256. It took roughly three
-hours where the other three took minutes.
+What the spread means: the gap between two runs of mlp (0.014) is about the
+same size as the gaps between models. So the ordering above was never
+established — only that the linear baseline is the one negative model, which
+held across both runs.
+
+None of it promotes anything either way. The panel carries survivorship bias,
+the fold counts are small, and the promotion gate refuses pretrain results by
+construction.
+
+`attn` is expensive: attention is O(n²) in the number of stocks in a day, and a
+day here is ~2,580 stocks even chunked at 256. It takes roughly three hours
+where the other three take minutes.
 
 ```bash
 python tests/test_ml.py         # 29 — pipeline correctness, synthetic data
@@ -648,6 +660,7 @@ python tests/test_kaynak_uyum.py  # 15 — provider shape contract, timezone joi
 python tests/test_attn.py         # 14 — set behaviour, permutation equivariance
 python tests/test_kayip.py        # 18 — ranking loss, outlier insensitivity
 python tests/test_faktor_zaman.py # 30 — overlap-corrected t, decay, regime split
+python tests/test_tekrarlanabilirlik.py  # 11 — same seed, same result
 node   tests/test_dashboard.js    # 28 — dashboard UI, real DOM
 ```
 

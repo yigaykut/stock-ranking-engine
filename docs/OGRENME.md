@@ -234,11 +234,29 @@ diğerleri gibi reddedildi.
 | seq | **+0.0429** | +0.91 | 2 (2 pozitif) | +0.032 |
 | attn | +0.0307 | **+1.24** | 3 (**3 pozitif**) | +0.025 |
 
-18.08 ölçümüne göre üç model de yukarı gitti (ridge −0.053 → −0.023,
-mlp −0.032 → +0.032, seq +0.002 → +0.043). Arada iki şey değişti: kayıp
-fonksiyonunda hedef sıraya çevrildi, ve panel 12 gün daha uzadı. Hangisinin ne
-kadar katkı verdiği **ölçülmedi**; iki değişikliği aynı anda yapıp farkı tek
-bir sebebe yazmak yanlış olur.
+**Bu üç sinir ağı satırı geçicidir.** Aynı komutu aynı panelde ikinci kez
+koştuğumda mlp +0.0321 yerine +0.0181 verdi. ridge iki kosuda da birebir aynı
+çıktı — sebebi işaret eden şey buydu: eğitim aslında tohumlu değildi.
+`torch.manual_seed` eğitim döngüsünün içinde çağrılıyordu, oysa ağ ondan önce
+`fit()` içinde kuruluyor; yani ağırlık başlatma o anki küresel üreteç
+durumunu kullanıyordu. Yığın sırası da tohumsuz küresel numpy üretecinden
+karıştırılıyordu.
+
+İkisi de düzeltildi (`_tohumla`, `rng.shuffle`) ve
+`tests/test_tekrarlanabilirlik.py` ile kilitlendi: aynı tohumla iki eğitim bit
+bit aynı, tohum değişince sonuç değişiyor, küresel üreteci bozmak hiçbir şeyi
+değiştirmiyor.
+
+Farkın büyüklüğü önemli: aynı modelin iki koşusu arasındaki 0.014,
+**modeller arasındaki farklarla aynı mertebede**. Yani yukarıdaki sıralama
+ölçülmüş değil. İki koşuda da değişmeyen tek şey, doğrusal taban çizgisinin
+negatif olan tek model olması.
+
+18.08 ölçümüne göre yön yukarı (ridge −0.053 → −0.023, mlp −0.032 → +0.032/+0.018,
+seq +0.002 → +0.043). Arada iki şey değişti: kayıp fonksiyonunda hedef sıraya
+çevrildi ve panel 12 gün uzadı. Hangisinin ne kadar katkı verdiği
+**ölçülmedi**; iki değişikliği aynı anda yapıp farkı tek bir sebebe yazmak
+yanlış olur.
 
 Doğrusal taban çizgisi negatif, üç sinir ağı da pozitif — paneldeki yapının
 doğrusal olmadığına dair ilk somut işaret. `seq`'in IC'si en yüksek ama iki

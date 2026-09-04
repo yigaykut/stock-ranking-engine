@@ -192,17 +192,40 @@ def _rank_loss(pred: "torch.Tensor", target: "torch.Tensor",
     return -(p * t).mean() / (ps * ts)
 
 
+def _tohumla(seed: int) -> None:
+    """Ag KURULMADAN once cagrilmali.
+
+    torch.manual_seed'i _train_torch icinde cagirmak yetmiyordu: ag oradan
+    ONCE, fit() icinde kuruluyor ve agirlik baslatma o anki kuresel torch
+    uretecini kullaniyor. Yani `seed` parametresi egitimi sabitliyor ama
+    BASLANGIC NOKTASINI sabitlemiyordu. Sonuc: ayni komut, ayni veri, ayni
+    tohum -> farkli IC (olculdu: mlp +0.0321 ve +0.0181, ayni panelde).
+    """
+    torch.manual_seed(int(seed))
+    if hasattr(torch, "cuda") and torch.cuda.is_available():
+        torch.cuda.manual_seed_all(int(seed))
+
+
 def _train_torch(model, batches, X_t, y_t, val_batches, val_X, val_y,
                  epochs: int, lr: float, weight_decay: float,
                  patience: int, seed: int) -> dict:
     torch.manual_seed(seed)
+    # YIGIN SIRASI DA TOHUMLU OLMALI (duzeltildi 04.09.2026).
+    # Eskiden burada np.random.shuffle vardi: KURESEL numpy uretecini
+    # kullaniyor ve o uretec hicbir yerde tohumlanmiyordu. torch.manual_seed
+    # yalnizca agirlik baslatmayi sabitliyor; yigin sirasi her kosuda
+    # degisiyordu, dolayisiyla SGD baska bir yol izliyor ve ayni komut ayni
+    # veriyle farkli sonuc veriyordu. Olculdu: ayni mlp, ayni panel, ayni
+    # tohum -> IC +0.0321 ve +0.0181. Aradaki fark, modeller arasindaki
+    # farklardan buyuktu; yani model siralamasi aslinda olculmemis oluyordu.
+    rng = np.random.default_rng(seed)
     opt = torch.optim.AdamW(model.parameters(), lr=lr, weight_decay=weight_decay)
     best_state, best_ic, bad = None, -np.inf, 0
     history = []
 
     for ep in range(epochs):
         model.train()
-        np.random.shuffle(batches)
+        rng.shuffle(batches)
         tot = 0.0
         for idx in batches:
             opt.zero_grad()
@@ -284,6 +307,7 @@ class MLPRanker(BaseModel):
             vm = val
         tm = ~vm
 
+        _tohumla(self.cfg["seed"])
         self.net = self._build(Z.shape[1])
         X_t = torch.tensor(Z[tm]); y_t = torch.tensor(y[tm])
         vX = torch.tensor(Z[vm]); vy = y[vm]
@@ -377,6 +401,7 @@ class SeqRanker(BaseModel):
             vm = val
         tm = ~vm
 
+        _tohumla(self.cfg["seed"])
         self.net = self._build(Z.shape[-1])
         info = _train_torch(self.net, _day_batches(dates[tm]),
                             torch.tensor(Z[tm]), torch.tensor(y[tm]),
@@ -551,6 +576,7 @@ class AttnRanker(BaseModel):
         tm = ~vm
 
         rng = np.random.default_rng(self.cfg["seed"])
+        _tohumla(self.cfg["seed"])
         self.net = self._build(Z.shape[1])
         info = _train_torch(self.net,
                             self._capped_batches(dates[tm], rng),
