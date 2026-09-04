@@ -18,6 +18,17 @@
     * StartWhenAvailable: bilgisayar 07:00'da kapaliysa acilir acilmaz
       telafi calismasi yapilir. Ayri bir LogonTrigger'a gerek YOK.
     * IgnoreNew: onceki calisma surerken yenisi baslatilmaz.
+    * PENCERESIZ: gorev gunluk.bat'i DOGRUDAN degil, wscript araciligiyla
+      gunluk_sessiz.vbs uzerinden cagirir. Boylece ekranda hicbir konsol
+      penceresi acilmaz.
+
+    04.09.2026 -- PENCERE NEDEN KALDIRILDI
+    Tek tetige dusurmek pencere SAYISINI azaltti ama penceresi olan tek
+    calisma da 30-40 dakika ekranda duruyordu. 03.09 ve 04.09'da pencere
+    kapatildi; ikisinde de gorev 3221225786 (STATUS_CONTROL_C_EXIT) ile
+    bitti, tarama yarida kaldi ve gun isaretlenmedi. Sistem 02.09
+    verisinde takili kaldi. Pencereyi hic acmamak bu hata sinifini komple
+    ortadan kaldiriyor: kapatilacak bir sey yok.
 
     27.08.2026 -- ONCEKI TASARIM VE NEDEN BIRAKILDI
     Once "07:00'dan itibaren 2 saatte bir, 14 saat" + oturum acilisi
@@ -41,6 +52,7 @@ param(
 $ErrorActionPreference = 'Stop'
 $kok = Split-Path -Parent $PSScriptRoot
 $bat = Join-Path $kok 'scripts\gunluk.bat'
+$vbs = Join-Path $kok 'scripts\gunluk_sessiz.vbs'
 
 if ($Kaldir) {
     schtasks /Delete /TN $GorevAdi /F
@@ -49,6 +61,7 @@ if ($Kaldir) {
 }
 
 if (-not (Test-Path $bat)) { throw "gunluk.bat bulunamadi: $bat" }
+if (-not (Test-Path $vbs)) { throw "gunluk_sessiz.vbs bulunamadi: $vbs" }
 
 $kullanici = "$env:USERDOMAIN\$env:USERNAME"
 $bugun     = (Get-Date).ToString('yyyy-MM-dd')
@@ -99,7 +112,8 @@ $xml = @"
   </Settings>
   <Actions Context="Author">
     <Exec>
-      <Command>$bat</Command>
+      <Command>wscript.exe</Command>
+      <Arguments>//B "$vbs"</Arguments>
       <WorkingDirectory>$kok</WorkingDirectory>
     </Exec>
   </Actions>
@@ -115,10 +129,11 @@ Remove-Item $gecici -Force -ErrorAction SilentlyContinue
 
 Write-Host ""
 Write-Host "Kuruldu: $GorevAdi"
-Write-Host "  komut     : $bat"
+Write-Host "  komut     : wscript //B $vbs  (penceresiz -> gunluk.bat)"
 Write-Host "  tetik     : gunde 1 kez ($Saat)"
 Write-Host "  telafi    : bilgisayar o saatte kapaliysa ilk acilista calisir"
 Write-Host "  gun kilidi: ayni gun ikinci calisma is yapmaz (logs\son_basari.txt)"
+Write-Host "  pencere   : yok - ekranda konsol acilmaz"
 Write-Host ""
 Write-Host "Durum icin : python scripts\durum.py"
 Write-Host "Elle calis : schtasks /Run /TN $GorevAdi"

@@ -43,8 +43,10 @@ def _task_info() -> dict | None:
         "    [int]($ts::ToTimeSpan($_.Repetition.Duration).TotalMinutes /"
         "          $ts::ToTimeSpan($_.Repetition.Interval).TotalMinutes) + 1"
         "  } else { 1 } } | Measure-Object -Sum).Sum;"
+        "$exe = ($t.Actions | Select-Object -First 1).Execute;"
         "[pscustomobject]@{state=$t.State.ToString();"
         "triggers=$rep;"
+        "exe=$exe;"
         "last=$i.LastRunTime.ToString('yyyy-MM-dd HH:mm');"
         "result=$i.LastTaskResult;"
         "next=$i.NextRunTime.ToString('yyyy-MM-dd HH:mm')} | ConvertTo-Json"
@@ -79,6 +81,16 @@ def main() -> int:
         if not ok and str(t.get("result")) == "3221225786":
             print("                   ^ pencere kapatilmis (Ctrl+C). Tarama"
                   " yarida kalir ve gun kilidi dusmez.")
+        # Gorev artik gunluk.bat'i wscript uzerinden penceresiz cagiriyor.
+        # Dogrudan .bat cagiran eski kurulumda ekranda 30-40 dakika duran bir
+        # konsol aciliyor; kapatilirsa tarama yarida kaliyor (bkz. ustteki
+        # 3221225786 notu). Bu yuzden hangi kurulumun gecerli oldugu yazilir.
+        exe = str(t.get("exe") or "")
+        sessiz = "wscript" in exe.lower()
+        print("    pencere      : "
+              + ("yok (wscript ile penceresiz)" if sessiz else
+                 "VAR — konsol aciliyor, kapatilirsa tarama yarim kalir;"
+                 " duzeltmek icin scripts/gorev_kur.ps1"))
         print(f"    sonraki      : {t.get('next')}")
         print("    Not: ayni gun ikinci calisma is yapmaz; gun kilidi devrede.")
 
