@@ -569,40 +569,58 @@ fitted entirely to noise, and you find out it's wrong after losing money.
 
 ### All four measured on the reconstructed panel
 
-188,465 labelled rows, 73 dates, 21-day horizon, purged walk-forward:
+188,465 labelled rows, 73 dates, 21-day horizon, purged walk-forward, with
+training properly seeded:
 
 | Model | IC | ICIR | folds | decile spread |
 |---|---:|---:|---:|---:|
 | ridge (baseline) | −0.0226 | −0.85 | 3 (1 positive) | +0.031 |
-| mlp | +0.0321 | +0.66 | 3 (2 positive) | +0.052 |
-| seq | +0.0429 | +0.91 | 2 (2 positive) | +0.032 |
-| attn | +0.0307 | +1.24 | 3 (3 positive) | +0.025 |
+| mlp | **+0.0272** | **+0.90** | 3 (**3 positive**) | +0.024 |
+| seq | +0.0239 | +0.74 | 2 (1 positive) | +0.019 |
+| attn | +0.0042 | +0.09 | 3 (2 positive) | +0.003 |
+| ensemble (all four) | −0.0056 | −0.46 | 2 (1 positive) | +0.006 |
 
-**Treat the three network rows as provisional.** Running the same command a
-second time on the identical panel gave mlp +0.0181 instead of +0.0321. ridge
-matched exactly both times, which is what pointed at the cause: training wasn't
-actually seeded. `torch.manual_seed` was called inside the training loop, but
-the network is built before that in `fit()`, so weight initialisation used
-whatever state the global generator happened to be in. The batch shuffle used
-the unseeded global numpy generator too.
+An earlier version of this table had attn at +0.0307 with an ICIR of 1.24 and
+called it the most consistent of the four. That run wasn't seeded — see below.
+With the seeding fixed, attn lands at +0.0042, which is not distinguishable
+from nothing. Its whole apparent advantage was which random initialisation it
+happened to get.
 
-Both are fixed and locked down by `tests/test_tekrarlanabilirlik.py`, which
-checks that two fits with the same seed are bit-identical, that changing the
-seed changes the result, and that corrupting the global generators beforehand
-changes nothing. A clean re-measurement is running.
+What survives repetition: the linear baseline is the only negative model, and
+mlp is the only one positive on every fold. The gap between mlp and seq (0.003)
+is far smaller than the run-to-run spread I measured before seeding was fixed
+(0.014), so those two are not separated by this data.
 
-What the spread means: the gap between two runs of mlp (0.014) is about the
-same size as the gaps between models. So the ordering above was never
-established — only that the linear baseline is the one negative model, which
-held across both runs.
+The ensemble is worse than every member it contains, which is the same thing
+the August run found. Averaging helps when the members make independent
+mistakes; here they don't, so averaging reinforces the shared error rather than
+cancelling it. The ensemble is a candidate like any other and it got rejected
+like any other.
 
-None of it promotes anything either way. The panel carries survivorship bias,
-the fold counts are small, and the promotion gate refuses pretrain results by
-construction.
+Nothing promotes. The panel carries survivorship bias, fold counts are small,
+and the gate refuses pretrain results by construction.
 
-`attn` is expensive: attention is O(n²) in the number of stocks in a day, and a
-day here is ~2,580 stocks even chunked at 256. It takes roughly three hours
-where the other three take minutes.
+### The seeding bug that produced the first table
+
+Running the same command twice on the identical panel gave mlp +0.0321 once and
++0.0181 the other time. ridge matched exactly both times, which is what pointed
+at the cause — ridge has no torch in it.
+
+`torch.manual_seed` was called inside the training loop, but the network is
+built before that in `fit()`, so weight initialisation read whatever state the
+global generator happened to be in. The per-epoch batch shuffle used
+`np.random.shuffle` on the unseeded global numpy generator, so SGD walked a
+different path each run. The `seed` argument was threaded through the whole
+stack and quietly ignored.
+
+Both fixed, and locked down by `tests/test_tekrarlanabilirlik.py`: two fits
+with the same seed are bit-identical for all three torch models, a different
+seed changes the result, and corrupting both global generators beforehand
+changes nothing.
+
+`attn` is expensive regardless: attention is O(n²) in the number of stocks in a
+day, and a day here is ~2,580 stocks even chunked at 256. It takes roughly
+three hours where the other three take minutes.
 
 ```bash
 python tests/test_ml.py         # 29 — pipeline correctness, synthetic data
@@ -653,7 +671,7 @@ python tests/test_scoring.py      # 21 — scoring engine
 python tests/test_ml.py           # 29 — learning pipeline, synthetic
 python tests/test_backfill.py     # 34 — historical panel, leakage, bias brake, resume
 python tests/test_evren.py        # 17 — universe collapse, stale-cache recovery
-python tests/test_topluluk.py     # 12 — ensemble blending and alignment
+python tests/test_topluluk.py     # 18 — ensemble blending, fold alignment
 python tests/test_otomasyon.py    #  9 — daily stage isolation
 python tests/test_kodlama.py      #  5 — source encoding guard
 python tests/test_kaynak_uyum.py  # 15 — provider shape contract, timezone join

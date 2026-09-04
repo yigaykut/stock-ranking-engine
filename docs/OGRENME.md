@@ -224,51 +224,72 @@ diğerleri gibi reddedildi.
 
 ### Dört model, aynı panel (04.09.2026)
 
-`attn` eklendikten ve kayıp fonksiyonu düzeltildikten sonraki ilk gerçek ölçüm.
-188.465 etiketli satır, 73 tarih, 21 gün ufuk:
+`attn` eklendikten, kayıp fonksiyonu düzeltildikten ve **tohumlama hatası
+giderildikten** sonraki ölçüm. 188.465 etiketli satır, 73 tarih, 21 gün ufuk:
 
 | Model | IC | ICIR | Katman | Dilim farkı |
 |---|---:|---:|---:|---:|
 | ridge (taban) | −0.0226 | −0.85 | 3 (1 pozitif) | +0.031 |
-| mlp | +0.0321 | +0.66 | 3 (2 pozitif) | +0.052 |
-| seq | **+0.0429** | +0.91 | 2 (2 pozitif) | +0.032 |
-| attn | +0.0307 | **+1.24** | 3 (**3 pozitif**) | +0.025 |
+| mlp | **+0.0272** | **+0.90** | 3 (**3 pozitif**) | +0.024 |
+| seq | +0.0239 | +0.74 | 2 (1 pozitif) | +0.019 |
+| attn | +0.0042 | +0.09 | 3 (2 pozitif) | +0.003 |
+| topluluk (dördü) | −0.0056 | −0.46 | 2 (1 pozitif) | +0.006 |
 
-**Bu üç sinir ağı satırı geçicidir.** Aynı komutu aynı panelde ikinci kez
-koştuğumda mlp +0.0321 yerine +0.0181 verdi. ridge iki kosuda da birebir aynı
-çıktı — sebebi işaret eden şey buydu: eğitim aslında tohumlu değildi.
-`torch.manual_seed` eğitim döngüsünün içinde çağrılıyordu, oysa ağ ondan önce
-`fit()` içinde kuruluyor; yani ağırlık başlatma o anki küresel üreteç
-durumunu kullanıyordu. Yığın sırası da tohumsuz küresel numpy üretecinden
-karıştırılıyordu.
+#### Önce tohumlama hatası
 
-İkisi de düzeltildi (`_tohumla`, `rng.shuffle`) ve
-`tests/test_tekrarlanabilirlik.py` ile kilitlendi: aynı tohumla iki eğitim bit
-bit aynı, tohum değişince sonuç değişiyor, küresel üreteci bozmak hiçbir şeyi
-değiştirmiyor.
+Bu ölçümün ilk hâlinde `attn` +0.0307 ve ICIR 1.24 vermişti; "dördünün en
+tutarlısı" diye yazmıştım. O koşu **tohumlu değildi.**
 
-Farkın büyüklüğü önemli: aynı modelin iki koşusu arasındaki 0.014,
-**modeller arasındaki farklarla aynı mertebede**. Yani yukarıdaki sıralama
-ölçülmüş değil. İki koşuda da değişmeyen tek şey, doğrusal taban çizgisinin
-negatif olan tek model olması.
+Aynı komutu aynı panelde iki kez koşunca `mlp` bir kez +0.0321, bir kez +0.0181
+verdi. `ridge` ikisinde de birebir aynıydı — sebebi işaret eden buydu, ridge'de
+torch yok.
 
-18.08 ölçümüne göre yön yukarı (ridge −0.053 → −0.023, mlp −0.032 → +0.032/+0.018,
-seq +0.002 → +0.043). Arada iki şey değişti: kayıp fonksiyonunda hedef sıraya
-çevrildi ve panel 12 gün uzadı. Hangisinin ne kadar katkı verdiği
-**ölçülmedi**; iki değişikliği aynı anda yapıp farkı tek bir sebebe yazmak
-yanlış olur.
+İki kaynak:
 
-Doğrusal taban çizgisi negatif, üç sinir ağı da pozitif — paneldeki yapının
-doğrusal olmadığına dair ilk somut işaret. `seq`'in IC'si en yüksek ama iki
-katmanda. `attn` üç katmanın üçünde de pozitif ve ICIR'ı açık ara önde; terfi
-kapısının sorduğu şey de zaten büyüklük değil tutarlılık.
+1. `torch.manual_seed` **eğitim döngüsünün içinde** çağrılıyordu, oysa ağ ondan
+   önce `fit()` içinde kuruluyor. Ağırlık başlatma, küresel üretecin o anki
+   durumunu okuyordu.
+2. Her devirdeki yığın karıştırması `np.random.shuffle` ile, yani tohumlanmamış
+   küresel numpy üretecinden yapılıyordu. SGD her koşuda başka bir yol izliyordu.
 
-Hiçbiri terfi etmiyor ve edemez: panel hayatta kalma yanlılığı taşıyor.
+`seed` parametresi baştan sona taşınıyor ve sessizce yok sayılıyordu.
+Düzeltildi (`_tohumla()` ağ kurulmadan önce, `rng.shuffle` tohumlu üreteçle),
+`tests/test_tekrarlanabilirlik.py` ile kilitlendi.
 
-**Maliyet notu.** `attn` diğer üçü dakikalar sürerken ~3 saat sürdü. Dikkat,
-gündeki hisse sayısında O(n²) ve burada bir gün 2.580 hisse — 256'lık
-parçalara bölünse bile. Canlı tahminde bu sorun değil (tek gün, tek geçiş),
-ama ileri yürüyüşlü eğitimde belirleyici.
+#### Düzeltilmiş ölçümün söylediği
+
+**`attn`'in üstünlüğü tamamen tohum şansıymış.** +0.0307/1.24 → +0.0042/0.09.
+Sıfırdan ayırt edilemez. Kümeye dikkat eden mimari bu panelde bir şey
+yakalamıyor. Bu, mimarinin yanlış olduğu anlamına gelmiyor — 73 tarih ve 3
+katmanla hiçbir mimari için güçlü bir ifade kurulamaz — ama "en tutarlısı"
+ifadesi geri alınmıştır.
+
+Tekrara dayanan iki şey kaldı:
+
+- **Doğrusal taban çizgisi negatif olan tek model.** İki koşuda da.
+- **`mlp` her katmanda pozitif olan tek model.**
+
+`mlp` ile `seq` arasındaki fark (0.003), tohumlama düzeltilmeden önce ölçtüğüm
+koşular arası yayılımdan (0.014) çok küçük. Bu veri o ikisini ayırmıyor.
+
+#### Topluluk yine kaybetti
+
+Katman hizalaması düzeltildikten sonra topluluk kurulabildi (önceki koşuda
+"hiçbir katmanda ortak satır yok" diye patlıyordu) — ve **üyelerinin hepsinden
+kötü** çıktı: −0.0056.
+
+Bu, 18.08 ölçümündeki bulgunun tekrarı. Ortalama almak, üyeler **bağımsız**
+hata yaptığında işe yarar. Burada dördü de aynı yöne sapıyor; ortalama ortak
+sapmayı yok etmiyor, pekiştiriyor. Topluluk da diğerleri gibi bir aday ve
+diğerleri gibi reddedildi.
+
+#### Maliyet notu
+
+`attn` diğer üçü dakikalar sürerken ~3 saat sürdü. Dikkat, gündeki hisse
+sayısında O(n²) ve burada bir gün 2.580 hisse — 256'lık parçalara bölünse
+bile. Canlı tahminde sorun değil (tek gün, tek geçiş), ileri yürüyüşlü
+eğitimde belirleyici. Ölçtüğü değer +0.0042 iken bu maliyet savunulamaz;
+`attn` şu an sistemde **duruyor ama önerilmiyor.**
 
 ---
 
