@@ -376,32 +376,61 @@ def label_forward_returns(snapshots: pd.DataFrame, horizon_days: int = 21,
 # =============================================================================
 #  3) LEARN
 # =============================================================================
+def factor_ic_series(labeled: pd.DataFrame, factor_id: str,
+                     label_col: str, min_rows: int = 10) -> dict | None:
+    """Tek bir faktorun GUN GUN IC serisi.
+
+    information_coefficients() bu serinin ortalamasini alir. Seriyi ayrica
+    dondurmemizin sebebi: ortalama, zamanla degisen her seyi gizler. Bir
+    faktorun gucu azaliyor mu, yalnizca belirli bir rejimde mi calisiyor,
+    ortalama gercekten sifirdan farkli mi -- hicbiri tek sayidan okunamaz.
+
+    Doner: {'column': kullanilan sutun, 'dates': [...], 'ic': [...]}
+    Sutun bulunamazsa None.
+    """
+    col = f"score_{factor_id}"
+    # Gecmise donuk panelde yalnizca HAM deger var (score_* sutunlari
+    # skorlama sirasinda uretiliyor, panelde skorlama yok). IC bir
+    # SIRALAMA korelasyonu oldugu icin ham deger uzerinden de dogru
+    # hesaplanir -- tek fark yon: 'lower_better' faktorlerde isaret ters
+    # cikar ve bu, yorumlarken bilinmesi gereken bir seydir.
+    if col not in labeled.columns:
+        col = f"raw_{factor_id}"
+    if col not in labeled.columns or label_col not in labeled.columns:
+        return None
+
+    dates, ics = [], []
+    for d, grp in labeled.groupby("snapshot_date"):
+        sub = grp[[col, label_col]].dropna()
+        if len(sub) >= min_rows and sub[col].nunique() > 2:
+            v = sub[col].corr(sub[label_col], method="spearman")
+            if np.isfinite(v):
+                dates.append(str(pd.Timestamp(d).date()))
+                ics.append(float(v))
+    return {"column": col, "dates": dates, "ic": ics}
+
+
 def information_coefficients(labeled: pd.DataFrame, factor_ids: list[str],
-                             label_col: str) -> pd.DataFrame:
+                             label_col: str,
+                             directions: dict[str, str] | None = None) -> pd.DataFrame:
     """Her faktorun Bilgi Katsayisi (IC) = skor ile ileri getiri Spearman korelasyonu.
 
     IC, kantitatif finansta bir faktorun ongoru gucunun standart olcusudur.
     |IC| > 0.03 zayif ama kullanilabilir, > 0.05 iyi, > 0.10 cok iyi kabul edilir.
     """
+    directions = directions or {}
     rows = []
     for fid in factor_ids:
-        col = f"score_{fid}"
-        # Gecmise donuk panelde yalnizca HAM deger var (score_* sutunlari
-        # skorlama sirasinda uretiliyor, panelde skorlama yok). IC bir
-        # SIRALAMA korelasyonu oldugu icin ham deger uzerinden de dogru
-        # hesaplanir -- tek fark yon: 'lower_better' faktorlerde isaret ters
-        # cikar ve bu, yorumlarken bilinmesi gereken bir seydir.
-        if col not in labeled.columns:
-            col = f"raw_{fid}"
-        if col not in labeled.columns or label_col not in labeled.columns:
+        ser = factor_ic_series(labeled, fid, label_col)
+        if ser is None:
             continue
-
-        per_date = []
-        for _, grp in labeled.groupby("snapshot_date"):
-            sub = grp[[col, label_col]].dropna()
-            if len(sub) >= 10 and sub[col].nunique() > 2:
-                per_date.append(sub[col].corr(sub[label_col], method="spearman"))
-
+        col, per_date = ser["column"], ser["ic"]
+        # HAM sutunda 'lower_better' parametrenin IC'si dogal olarak negatif
+        # cikar (dusuk deger iyi demek). Duzeltilmezse saglikli bir parametre
+        # "ters yonde" gorunur ve _save_factor_ic ona "agirligi dusurulmeli"
+        # onerisi yazar. score_* sutununda yon zaten uygulanmistir.
+        if col.startswith("raw_") and directions.get(fid) == "lower_better":
+            per_date = [-v for v in per_date]
         if per_date:
             arr = np.array(per_date, dtype=float)
             arr = arr[np.isfinite(arr)]

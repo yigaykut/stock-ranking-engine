@@ -128,6 +128,27 @@ def main() -> int:
     else:
         print("    egitim       : sayac dolunca KENDILIGINDEN baslar")
 
+    # --- 3b) Parametre gucu: hangi agirlik kanitli, hangisi degil
+    #     Tam tablo panoda; burada yalnizca "kac tanesi esigi geciyor" ozeti.
+    try:
+        from src import faktor_zaman as fz
+        fzp = fz.load()
+    except Exception:
+        fzp = None
+    if fzp and fzp.get("factors"):
+        esik = fzp.get("t_threshold", 2.0)
+        gecen = fzp.get("passing") or []
+        print()
+        print(f"    parametre gucu: {len(fzp['factors'])} olculdu, "
+              f"{len(gecen)} tanesi |t|>={esik:.0f} esigini geciyor")
+        if gecen:
+            print("      " + ", ".join(gecen[:6]))
+        rc = fzp.get("regime_counts") or {}
+        if rc:
+            print("      rejim dagilimi: "
+                  + ", ".join(f"{k} {v}" for k, v in sorted(rc.items())))
+        print(f"      ayrinti: data/faktor_zaman.json  (kaynak: {fzp.get('source')})")
+
     pt = v.get("pretrain")
     if pt:
         durum = "uretim suruyor" if pt.get("partial") else "tamamlandi"

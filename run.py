@@ -761,6 +761,42 @@ def cmd_scan(args: argparse.Namespace) -> int:
 FACTOR_IC = ROOT / "data" / "faktor_ic.json"
 
 
+def _zaman_analizi(labeled: "pd.DataFrame", cfg: dict, factor_ids: list,
+                   label_col: str, horizon: int, source: str) -> None:
+    """Parametre gucunu zamana ve piyasa rejimine gore kirar, diske yazar.
+
+    Rejim etiketi endeksin KENDI fiyat gecmisinden gecmise donuk uretilir
+    (regime.labels_for_dates). Boylece gecmise donuk panelin tarihleri de
+    canli gunlerle ayni kuralla etiketlenir. Endeks gecmisi yoksa analiz
+    rejimsiz yapilir -- anlamlilik ve zayiflama kismi yine calisir.
+    """
+    from src import faktor_zaman as fz
+    from src import regime as rg
+
+    try:
+        dates = sorted(labeled["snapshot_date"].dropna().astype(str)
+                       .str.slice(0, 10).unique())
+        rejim = {}
+        try:
+            bench = yahoo.fetch_benchmark("SPY", "2y", use_cache=True)
+            close = bench["Close"] if bench is not None and "Close" in bench else None
+            rejim = rg.labels_for_dates(close, dates)
+        except Exception:
+            rejim = {}
+
+        weights = {f["id"]: float(f.get("weight", 0)) for f in cfg["factors"]}
+        yonler = {f["id"]: str(f.get("direction", "higher_better"))
+                  for f in cfg["factors"]}
+        payload = fz.analyze(labeled, factor_ids, label_col, horizon,
+                             weights=weights, rejim=rejim, directions=yonler,
+                             source=source)
+        fz.save(payload)
+        print()
+        fz.print_table(payload)
+    except Exception as e:                       # olcum, taramayi dusurmemeli
+        print(f"Zaman/rejim analizi yapilamadi: {e}", file=sys.stderr)
+
+
 def _save_factor_ic(ic: "pd.DataFrame", cfg: dict, horizon: int, labeled: int,
                     dates: int, source: str) -> None:
     """Parametre bazli IC tablosunu kalici olarak saklar (pano bunu okur).
@@ -838,7 +874,9 @@ def cmd_learn(args: argparse.Namespace) -> int:
         print("\nUYARI: etiketli veri cok az; sonuclar guvenilir degil.\n"
               "Daha fazla tarama biriktir, sonra tekrar calistir.", file=sys.stderr)
 
-    ic = ml.information_coefficients(labeled, factor_ids, label_col)
+    yonler = {f["id"]: str(f.get("direction", "higher_better"))
+              for f in cfg["factors"]}
+    ic = ml.information_coefficients(labeled, factor_ids, label_col, yonler)
     if not ic.empty:
         print("\n" + "=" * 66)
         print("BILGI KATSAYILARI (IC) — faktorlerin gercek ongoru gucu")
@@ -854,6 +892,13 @@ def cmd_learn(args: argparse.Namespace) -> int:
         # degerli cikti -- "hangi parametre ise yariyor" sorusunun cevabi.
         _save_factor_ic(ic, cfg, args.horizon, n_lab, len(dates),
                         "panel" if store is not None else "canli")
+
+    # --- Zaman/rejim kirilimi: ortalamanin gizledigi her sey
+    #     Tek bir IC ortalamasi "bu parametre calisiyor mu" sorusuna cevap
+    #     vermez; ortusen etiketler yuzunden siradan t degeri de sisik cikar.
+    #     Ayrintili gerekce: src/faktor_zaman.py.
+    _zaman_analizi(labeled, cfg, factor_ids, label_col, args.horizon,
+                   "panel" if store is not None else "canli")
 
     weights = ml.learn_weights(labeled, factor_ids, label_col, method=args.method)
     if not weights:

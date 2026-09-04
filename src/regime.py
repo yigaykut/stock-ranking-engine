@@ -43,18 +43,15 @@ def _pct(a: float, b: float) -> float | None:
     return round(100.0 * (a / b - 1.0), 2)
 
 
-def compute(bench_close: pd.Series | None,
-            breadth_pct: float | None = None) -> dict:
-    """Rejim ozeti. bench_close: endeksin kapanis serisi."""
-    out: dict = {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
-                 "breadth_pct": breadth_pct}
+def _olcumler(s: pd.Series) -> dict | None:
+    """Serinin SON gunune ait rejim olcumleri. Yalnizca gecmise bakar.
 
-    if bench_close is None or len(bench_close) < 210:
-        out.update(label="BILINMIYOR", label_tr="Rejim olculemedi",
-                   detail_tr="Endeks gecmisi yetersiz.")
-        return out
-
-    s = pd.to_numeric(bench_close, errors="coerce").dropna()
+    compute() ile labels_for_dates() ayni kurali kullansin diye ayri duruyor.
+    Iki ayri kopya olsaydi biri degistiginde gecmis olcum bugunkuyle
+    kiyaslanamaz hale gelirdi -- ve bunu fark etmek imkansiz olurdu.
+    """
+    if s is None or len(s) < 210:
+        return None
     px = float(s.iloc[-1])
     ma50 = float(s.rolling(50).mean().iloc[-1])
     ma200 = float(s.rolling(200).mean().iloc[-1])
@@ -65,32 +62,62 @@ def compute(bench_close: pd.Series | None,
     vol_series = ret.rolling(20).std().dropna().tail(252) * np.sqrt(252)
     vol_pct = float((vol_series <= vol20).mean() * 100) if len(vol_series) > 30 else None
 
-    out.update({
+    m = {
         "price": round(px, 2),
         "vs_ma50_pct": _pct(px, ma50),
         "vs_ma200_pct": _pct(px, ma200),
         "ma200_slope_pct": _pct(ma200, ma200_prev),
         "vol20_annual_pct": round(100 * vol20, 1),
         "vol_percentile": round(vol_pct, 0) if vol_pct is not None else None,
-    })
+    }
+    m["label"] = _etiket(px > ma50, px > ma200, (m["ma200_slope_pct"] or 0) > 0)
+    m["stressed"] = bool(vol_pct is not None and vol_pct >= 80)
+    return m
 
-    above50, above200 = px > ma50, px > ma200
-    rising = (out["ma200_slope_pct"] or 0) > 0
-    stressed = vol_pct is not None and vol_pct >= 80
 
+def _etiket(above50: bool, above200: bool, rising: bool) -> str:
+    """Rejim kurali. Tek yerde durur; genislik (breadth) etiketi DEGISTIRMEZ,
+    yalnizca aciklama metnine uyari ekler -- bu yuzden etiket, endeks fiyat
+    gecmisinden gecmise donuk olarak da uretilebilir."""
     if above50 and above200 and rising:
-        label, tr = "YUKSELIS", "Yukselis rejimi"
+        return "YUKSELIS"
+    if not above200 and not rising:
+        return "DUSUS"
+    return "GECIS"
+
+
+def compute(bench_close: pd.Series | None,
+            breadth_pct: float | None = None) -> dict:
+    """Rejim ozeti. bench_close: endeksin kapanis serisi."""
+    out: dict = {"date": datetime.now(timezone.utc).strftime("%Y-%m-%d"),
+                 "breadth_pct": breadth_pct}
+
+    s = (pd.to_numeric(bench_close, errors="coerce").dropna()
+         if bench_close is not None else None)
+    m = _olcumler(s) if s is not None else None
+    if m is None:
+        out.update(label="BILINMIYOR", label_tr="Rejim olculemedi",
+                   detail_tr="Endeks gecmisi yetersiz.")
+        return out
+
+    label = m.pop("label")
+    stressed = m.pop("stressed")
+    vol_pct = m["vol_percentile"]
+    out.update(m)
+
+    if label == "YUKSELIS":
+        tr = "Yukselis rejimi"
         detail = ("Endeks 50 ve 200 gunluk ortalamasinin uzerinde, uzun ortalama "
                   "yukseliyor. Momentum egilimli siralamanin tarihsel olarak en "
                   "iyi calistigi ortam.")
-    elif not above200 and not rising:
-        label, tr = "DUSUS", "Dusus rejimi"
+    elif label == "DUSUS":
+        tr = "Dusus rejimi"
         detail = ("Endeks 200 gunluk ortalamasinin ALTINDA ve ortalama dusuyor. "
                   "Momentum/trend agirlikli siralamalar bu ortamda tarihsel "
                   "olarak en kotu sonucu verir. Liste yine uretilir, ama "
                   "guveni dusuk okunmalidir.")
     else:
-        label, tr = "GECIS", "Gecis / yatay rejim"
+        tr = "Gecis / yatay rejim"
         detail = ("Endeks ortalamalarin arasinda: yon belirsiz. Donus "
                   "noktalarinda trend sinyalleri en cok yaniltir.")
 
@@ -151,3 +178,46 @@ def history() -> dict:
         return json.loads(HISTORY.read_text(encoding="utf-8")) or {}
     except Exception:
         return {}
+
+
+def labels_for_dates(bench_close: pd.Series | None,
+                     dates: "list[str]") -> dict[str, str]:
+    """Verilen tarihlerin her biri icin GECMISE DONUK rejim etiketi.
+
+    NEDEN YAPILABILIYOR: etiket kurali (_etiket) yalnizca endeksin kendi fiyat
+    gecmisine bakar -- 50/200 gunluk ortalama ve 200 gunluk egim. Genislik
+    (breadth) etikete girmez, sadece aciklama metnine uyari ekler. Bu yuzden
+    gecmise donuk panelin 73 tarihi de bugunku canli hesapla AYNI kuralla
+    etiketlenebilir. Modul basindaki "rejim sonradan uretilemez" notu
+    genislik icin dogru, etiket icin degil.
+
+    ILERIYE BAKIS YOK: her tarih icin seri o tarihte KESILIR.
+
+    Doner: {'2026-01-15': 'YUKSELIS', ...}  (olculemeyen tarih atlanir)
+    """
+    if bench_close is None or not len(bench_close):
+        return {}
+    s = pd.to_numeric(bench_close, errors="coerce").dropna()
+    if s.empty:
+        return {}
+
+    # Endeks serisi dilimli (America/New_York), anlik goruntu tarihleri duz
+    # metin. Kiyaslama icin indeks dilimsiz gune indirilir.
+    idx = pd.to_datetime(s.index)
+    try:
+        idx = idx.tz_localize(None) if idx.tz is None else idx.tz_convert(None)
+    except (TypeError, AttributeError):
+        pass
+    s = pd.Series(s.to_numpy(), index=pd.DatetimeIndex(idx).normalize())
+    s = s[~s.index.duplicated(keep="last")].sort_index()
+
+    out: dict[str, str] = {}
+    for d in dates:
+        ts = pd.to_datetime(str(d), errors="coerce")
+        if ts is pd.NaT:
+            continue
+        kesit = s[s.index <= ts.normalize()]
+        m = _olcumler(kesit)
+        if m:
+            out[str(d)] = m["label"]
+    return out

@@ -157,6 +157,7 @@ def _payload(df: pd.DataFrame, diagnostics: dict, top_n: int) -> dict:
         "noise": _score_noise(df, diagnostics),
         "paper": _paper_state(),
         "factorIC": _factor_ic_state(),
+        "factorTime": _factor_time_state(),
         "regime": diagnostics.get("regime") or {},
         "health": _health_state(diagnostics),
     }
@@ -180,6 +181,23 @@ def _factor_ic_state() -> dict | None:
     en dogrudan cevap.
     """
     p = Path(__file__).resolve().parents[1] / "data" / "faktor_ic.json"
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def _factor_time_state() -> dict | None:
+    """Parametre gucunun zaman ve rejim kirilimi (bkz. src/faktor_zaman.py).
+
+    IC tablosu "ortalama guc" soruyordu; bu dosya "ortalama gercek mi, artiyor
+    mu azaliyor mu, hangi ortamda" sorulariyla ayni tabloyu tamamliyor. Ayri
+    bir bolum acmak yerine ayni tabloya sutun olarak giriyor -- kullanicinin
+    iki listeyi kafasinda eslestirmesi gerekmesin.
+    """
+    p = Path(__file__).resolve().parents[1] / "data" / "faktor_zaman.json"
     if not p.exists():
         return None
     try:
@@ -439,6 +457,9 @@ h2{{font:400 clamp(24px,3.6vw,40px)/1 var(--disp);letter-spacing:.005em;
 
 /* ============ KARNE / IC / SAGLIK TABLOLARI ============ */
 .muted{{color:var(--ink-3,#8b7d7d);font-size:11.5px;line-height:1.6;margin:10px 0 0}}
+.panel-sub{{margin:14px 0 0;padding:12px 14px;border-radius:8px;background:rgba(255,255,255,.03);border:1px solid rgba(255,255,255,.06);font-size:12px;color:var(--ink-2)}}
+ul.tight{{margin:8px 0 0;padding-left:18px}}
+ul.tight li{{margin:5px 0;line-height:1.55}}
 table.mini{{width:100%;border-collapse:collapse;margin:10px 0 0;
   font:400 12px/1.5 var(--sans,inherit)}}
 table.mini td,table.mini th{{padding:7px 10px;border-bottom:1px solid var(--rule-2);
@@ -926,6 +947,21 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
   if (!F || !F.factors || !F.factors.length) return;
   const rows = F.factors.slice().sort((a, b) => (b.ic_mean || 0) - (a.ic_mean || 0));
 
+  /* Zaman/rejim kirilimi ayri bir dosyadan gelir ve OLMAYABILIR (eski kurulum,
+     ya da olcum henuz kosmamis). Sutunlar bu yuzden kosullu ekleniyor; veri
+     yoksa tablo eskisi gibi gorunur. */
+  const T = DATA.factorTime;
+  const tmap = {{}};
+  ((T && T.factors) || []).forEach(r => {{ tmap[r.factor] = r; }});
+  const hasT = Object.keys(tmap).length > 0;
+  const num = (v, d) => (v == null || !isFinite(v)) ? '—' : v.toFixed(d);
+  const rejimHucre = r => {{
+    const g = (r && r.by_regime) || {{}};
+    const ks = Object.keys(g);
+    if (!ks.length) return '—';
+    return ks.sort().map(k => `${{k.slice(0, 3)}} ${{num(g[k].ic, 3)}}`).join(' · ');
+  }};
+
   const verdict = ic => {{
     const a = Math.abs(ic || 0);
     if (a >= 0.10) return ['cok iyi', 'ok'];
@@ -937,15 +973,33 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
   const body = rows.map(r => {{
     const [txt, cls] = verdict(r.ic_mean);
     const neg = (r.ic_mean || 0) < 0;
+    const z = tmap[r.factor];
+    const esik = (T && T.t_threshold) || 2;
+    const gecti = z && z.t_nw != null && Math.abs(z.t_nw) >= esik;
+    const ekstra = hasT ? `
+      <td class="num">${{z ? (gecti ? '<b>' + num(z.t_nw, 2) + '</b>' : num(z.t_nw, 2)) : '—'}}</td>
+      <td class="num">${{z ? num(z.ic_ilk_yari, 3) + ' &rarr; ' + num(z.ic_son_yari, 3) : '—'}}</td>
+      <td class="num">${{rejimHucre(z)}}</td>` : '';
     return `<tr class="ic-${{cls}}">
       <td>${{r.factor}}</td>
       <td class="num">${{(r.ic_mean == null ? '—' : r.ic_mean.toFixed(4))}}</td>
       <td class="num">${{(r.icir == null ? '—' : r.icir.toFixed(2))}}</td>
-      <td class="num">${{r.periods}}</td>
+      <td class="num">${{r.periods}}</td>${{ekstra}}
       <td class="num">${{r.weight == null ? '—' : r.weight}}</td>
       <td>${{neg ? '<b>ters yonde</b> &mdash; ' : ''}}${{txt}}</td>
     </tr>`;
   }}).join('');
+
+  const basliklar = hasT
+    ? `<th class="num" title="Ortusen etiketler icin duzeltilmis t degeri (Newey-West). |t| ${{(T.t_threshold || 2)}} ve uzeri: gurultuden ayirt edilebilir.">t (duz)</th>
+       <th class="num" title="Donemin ilk ve ikinci yarisindaki IC ortalamasi. Isaret degisiyorsa parametre kararsizdir.">1.yari &rarr; 2.yari</th>
+       <th class="num" title="Piyasa rejimine gore IC. Rejim, endeksin kendi fiyat gecmisinden ayni kuralla uretilir.">Rejime gore</th>`
+    : '';
+
+  const notlar = ((T && T.notes_tr) || []).map(n => `<li>${{n}}</li>`).join('');
+  const zamanNot = notlar
+    ? `<div class="panel-sub"><b>Zaman ve rejim okumasi</b><ul class="tight">${{notlar}}</ul></div>`
+    : '';
 
   document.getElementById('icBody').innerHTML = `
     <p class="muted">Kaynak: <b>${{F.source === 'panel' ? 'gecmise donuk panel' : 'gercek taramalar'}}</b>
@@ -953,8 +1007,9 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
       ${{F.labeled_rows.toLocaleString('tr-TR')}} etiketli satir.<br>${{F.note_tr || ''}}</p>
     <div class="tbl-scroll"><table class="mini wide"><thead><tr>
       <th>Parametre</th><th class="num">IC</th><th class="num">ICIR</th>
-      <th class="num">Donem</th><th class="num">Agirlik</th><th>Yorum</th>
+      <th class="num">Donem</th>${{basliklar}}<th class="num">Agirlik</th><th>Yorum</th>
     </tr></thead><tbody>${{body}}</tbody></table></div>
+    ${{zamanNot}}
     <p class="muted">Hicbir agirlik bu tabloya bakilarak <b>otomatik degistirilmez</b>.
       Olcum bir oneridir; degisiklik senin kararindir.</p>`;
   document.getElementById('secIC').hidden = false;
