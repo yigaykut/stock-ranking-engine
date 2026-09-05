@@ -636,6 +636,109 @@ More detail: **[docs/OGRENME.md](docs/OGRENME.md)** (Turkish)
 
 ---
 
+## Short-term setups
+
+A separate question from everything above, in its own dashboard section and its
+own file. The ranking asks which stock looks better than the others over three
+weeks. This asks whether a 3-10 day setup printed today. A stock can sit 400th
+in the ranking and show up here, and that isn't a contradiction — the two
+answers are about different things.
+
+```bash
+python run.py kisa           # today's setups
+python run.py kisa kalibre   # measure confidence from cached history
+python run.py kisa panel     # export the model training set
+```
+
+Twelve setups on daily bars, ten on the entry side and two for watchlist exits:
+bullish engulfing, hammer, NR7 inside bar, volume breakout, MA20 pullback,
+Bollinger squeeze, RSI(2) oversold, gap fill, three-day pullback, volume dry-up,
+bearish engulfing, distribution day. None of them are new — they're standard
+candle, squeeze and mean-reversion patterns, picked for being objectively
+definable from bars already in the cache. What's new is that each one gets
+measured on this universe.
+
+Each detector returns whether it fired and how *cleanly* it fired. That second
+number is not a probability. High strength means it matches the pattern well,
+not that it pays better.
+
+### The confidence is a count
+
+How often, in the cached history, was this setup followed by beating the index
+over N days. Reporting that raw would mislead in three separate places.
+
+**Base rate.** In a rising market a random stock-day beats the index close to
+half the time, so 53% is not a good setup. Every bucket carries its own base
+rate and what matters is the gap. The dashboard shows both side by side.
+
+**Small samples.** Five wins out of seven is 71% and means nothing. Wilson
+intervals instead of the normal approximation — the normal one gives a
+zero-width interval for 0/10, which is plainly wrong — plus empirical-Bayes
+shrinkage toward the base rate, so a thin bucket reads near base and only pulls
+away as observations arrive.
+
+**Dependence, which matters most.** Fifty stocks printing the same setup on one
+day live through one market day, not fifty. And consecutive days' N-day outcomes
+share the same future. Effective sample size is roughly distinct-days divided by
+horizon, and the intervals use that number.
+
+How much that changes things, measured on synthetic data with *no* edge planted:
+
+```
+n=298   effective=30.2   p=0.7359   base=0.6129   interval=[0.5907, 0.8821]
+-> lower bound doesn't clear base: "can't be told apart from noise"
+```
+
+298 raw signals, 30 effective. Without the correction it would have shown 73%
+confidence for an edge that isn't there. The same test finds a planted edge when
+there is one (+0.30, lower bound 0.887 against a base of 0.662), so it's two
+separate claims: it sees a real edge, and it doesn't invent one.
+
+### Which conditions it works in
+
+Every signal is recorded with its environment — volatility, liquidity, distance
+from the 200-day average — and calibration splits on one axis at a time. The
+full cross product is 27 buckets that never fill, and a split you can't measure
+is worth nothing.
+
+A confidence query walks from the most specific bucket down to the general one,
+and if nothing clears the threshold the answer is "bilinmiyor". No number gets
+invented to fill the gap.
+
+### Lookahead
+
+Two guards, because a detector that peeks looks perfect in backtest, produces
+nothing live, and is very hard to notice: the code runs, the numbers look
+plausible, the calibration comes back glowing.
+
+Behavioural — truncating the series at a date must reproduce that date's signal,
+and tripling every bar *after* it must change nothing. Source-level — no
+negative shift, `center=True` or `bfill` anywhere in the file, checked after
+stripping comments and strings with `tokenize` (a plain text search kept
+tripping over the module's own docstring saying `center=True` is banned).
+
+Labelling does use `shift(-horizon)` and has to: that's the outcome being
+measured. What matters is that the detectors never see it.
+
+### The next model
+
+`python run.py kisa panel` writes one row per setup occurrence: raw features up
+to the signal day, forward outcomes after it. The bucketed calibration is what a
+person reads and its buckets are deliberately coarse. A model doesn't need
+buckets, so this hands it the raw form — from the same detectors, features and
+labels, so it can't learn a different world than the one that was measured.
+
+That's meta-labelling: the pattern provides the primary signal, a second model
+estimates whether that signal will hold. A narrower and far more learnable
+question than "which stock goes up".
+
+The model doesn't exist yet. This is its training set, and the calibration
+already answers the question in the meantime.
+
+More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
+
+---
+
 ## Where this stands
 
 I audited this system and wrote up what's wrong with it — 20 findings, each
@@ -679,6 +782,8 @@ python tests/test_attn.py         # 14 — set behaviour, permutation equivarian
 python tests/test_kayip.py        # 18 — ranking loss, outlier insensitivity
 python tests/test_faktor_zaman.py # 30 — overlap-corrected t, decay, regime split
 python tests/test_tekrarlanabilirlik.py  # 11 — same seed, same result
+python tests/test_kisa_vade.py    # 43 — setup detectors, lookahead guards
+python tests/test_kalibrasyon.py  # 55 — Wilson, shrinkage, effective n
 node   tests/test_dashboard.js    # 28 — dashboard UI, real DOM
 ```
 
@@ -719,6 +824,9 @@ src/
   paper.py              cohort ledger — what the top 20 actually did
   fundamentals.py       daily point-in-time fundamentals archive
   delisting.py          survivorship-bias ledger
+  kisa_vade.py          short-term setup detectors, environment features
+  kalibrasyon.py        measured confidence: base rate, Wilson,
+                        shrinkage, effective sample size
   regime.py             market regime: trend, breadth, volatility;
                         back-labels past dates with the same rule
   faktor_zaman.py       factor strength over time: overlap-corrected t,
