@@ -21,6 +21,7 @@ Calistir:  python tests/test_kalibrasyon.py
 """
 from __future__ import annotations
 
+import json
 import sys
 import tempfile
 from pathlib import Path
@@ -303,6 +304,117 @@ finally:
     kv.KAYIT.pop(TEST_ID, None)
 
 check("test kurulumu kayittan silindi", TEST_ID not in kv.KAYIT)
+
+print()
+print("=" * 72)
+print("9b) KISA TARAF — kazanc tanimi TERS olmali")
+print("=" * 72)
+
+# Cikis sinyalleri icin "kazanc", endeksi gecmek DEGIL endeksin ALTINDA
+# kalmaktir. Ilk surumde hepsi "endeksi gecti" diye sayiliyordu ve saatlik
+# olcumde dagitim gunu +%5 kenar gosterdi -- kurulumun CALISTIGINI degil
+# tam tersini gosteren bir sayi.
+KISA_ID = "_test_kisa"
+kv.KAYIT[KISA_ID] = kv.Kurulum(KISA_ID, "Test cikis", "short",
+                               _sicrama_dedektor, "yalnizca test" * 5, 5)
+kv.KAYIT[TEST_ID] = kv.Kurulum(TEST_ID, "Test giris", "long",
+                               _sicrama_dedektor, "yalnizca test" * 5, 5)
+try:
+    bench3 = pd.Series(100.0, index=pd.bdate_range("2024-01-01", periods=420))
+    # Tetikten SONRA yukari giden seri: uzun taraf kazanmali, kisa taraf
+    # KAYBETMELI. Ayni dedektor, ayni sinyaller, sadece yon farkli.
+    kk = kb.kur(evren(sonrasi=0.006, seed0=3), bench3, ufuklar=(5,),
+                min_bar=220)
+    kov = {(x["kurulum"], x["kosul"]): x for x in kk["kovalar"]}
+    u, k_ = kov.get((TEST_ID, "*")), kov.get((KISA_ID, "*"))
+    check("iki yon de kovalandi", u is not None and k_ is not None)
+    if u and k_:
+        print(f"        uzun: p={u['p']:.3f} taban={u['taban']:.3f} "
+              f"edge={u['edge']:+.3f}")
+        print(f"        kisa: p={k_['p']:.3f} taban={k_['taban']:.3f} "
+              f"edge={k_['edge']:+.3f}")
+        check("uzun tarafta kenar POZITIF", u["edge"] > 0.15, str(u["edge"]))
+        check("ayni sinyalde kisa taraf kenari NEGATIF", k_["edge"] < -0.15,
+              str(k_["edge"]))
+        check("kisa tarafin tabani uzunun tumleyeni",
+              abs((u["taban"] + k_["taban"]) - 1.0) < 0.02,
+              f"{u['taban']:.3f} + {k_['taban']:.3f}")
+        check("kova yon bilgisini tasiyor",
+              u["yon"] == "long" and k_["yon"] == "short")
+    check("coklu test uyarisi var",
+          any("COKLU TEST" in n for n in kk["notlar_tr"]),
+          "; ".join(kk["notlar_tr"])[:80])
+finally:
+    kv.KAYIT.pop(KISA_ID, None)
+
+print()
+print("=" * 72)
+print("10) FREKANS FARKINDALIGI")
+print("=" * 72)
+
+# Gun ici ufuklar BAR cinsindendir. 21 barlik bir saatlik ufuk 21 gun degil
+# ~3 gun ortusme demek; etkin orneklem bunu bilmezse gereksiz yere kucuk
+# cikar ve sistem hicbir seyi olculebilir bulmaz.
+check("gunluk: 5 gun ufuk, 200 gun -> 40",
+      kb.etkin_n(500, 200, 5, 1.0) == 40.0, str(kb.etkin_n(500, 200, 5, 1.0)))
+check("saatlik: 21 bar (~3 gun), 200 gun -> ~67",
+      abs(kb.etkin_n(500, 200, 21, 7.0) - 200 / 3) < 0.1,
+      f"{kb.etkin_n(500, 200, 21, 7.0):.1f}")
+check("gun altindaki ufukta sinir GUN sayisi olur",
+      kb.etkin_n(500, 200, 3, 7.0) == 200.0,
+      f"{kb.etkin_n(500, 200, 3, 7.0)}  (3 bar < 1 gun)")
+check("bar_gun verilmezse gunluk gibi davranir",
+      kb.etkin_n(500, 200, 5) == kb.etkin_n(500, 200, 5, 1.0))
+
+kv.KAYIT[TEST_ID] = kv.Kurulum(TEST_ID, "Test", "long", _sicrama_dedektor,
+                               "yalnizca test" * 5, 5)
+try:
+    bench2 = pd.Series(100.0, index=pd.bdate_range("2024-01-01", periods=420))
+    k1d = kb.kur(evren(sonrasi=0.004, seed0=7), bench2, ufuklar=(5,),
+                 min_bar=220, frekans="1d")
+    k1h = kb.kur(evren(sonrasi=0.004, seed0=7), bench2, ufuklar=(21,),
+                 min_bar=220, frekans="1h")
+    check("frekans ciktida kayitli", k1d["frekans"] == "1d" and k1h["frekans"] == "1h")
+    check("bar_gun ciktida kayitli", k1h["bar_gun"] == 7.0, str(k1h["bar_gun"]))
+    check("ufuk birimi bar olarak isaretli", k1d["ufuk_birimi"] == "bar")
+
+    g1d = next(x for x in k1d["kovalar"] if x["kosul"] == "*")
+    g1h = next(x for x in k1h["kovalar"] if x["kosul"] == "*")
+    check("ayni gun sayisinda saatlik ufuk daha COK etkin gozlem veriyor",
+          g1h["n_etkin"] > g1d["n_etkin"],
+          f"1d {g1d['n_etkin']} vs 1h {g1h['n_etkin']}")
+
+    # Frekans basina AYRI dosya: ikinci kosu birincisini ezmemeli
+    eski_data, eski_cikti = kb.DATA, kb.CIKTI
+    with tempfile.TemporaryDirectory() as td:
+        kb.DATA, kb.CIKTI = Path(td), Path(td) / "k.json"
+        try:
+            kb.kaydet(k1d)
+            kb.kaydet(k1h)
+            check("kanonik dosya en son kosani gosteriyor",
+                  kb.yukle()["frekans"] == "1h")
+            check("gunluk arsiv duruyor", kb.yukle(frekans="1d")["frekans"] == "1d")
+            check("saatlik arsiv duruyor", kb.yukle(frekans="1h")["frekans"] == "1h")
+            check("kayitli frekanslar listeleniyor",
+                  kb.kayitli_frekanslar() == ["1d", "1h"],
+                  str(kb.kayitli_frekanslar()))
+
+            # ESKI DOSYA GERI UYUMU: frekans alani olmayan kayit gunluk sayilir
+            kb.CIKTI.write_text(json.dumps({k: v for k, v in k1d.items()
+                                            if k != "frekans"}),
+                                encoding="utf-8")
+            # Arsivlerin IKISI de silinmeli: yoksa 1h sorgusu kendi
+            # arsivini bulur ve geri uyum yolu hic denenmemis olur.
+            for f in Path(td).glob("kisa_vade_kalibrasyon_*.json"):
+                f.unlink()
+            check("frekanssiz eski kayit '1d' olarak okunuyor",
+                  kb.yukle(frekans="1d") is not None)
+            check("frekanssiz eski kayit '1h' diye okunMUYOR",
+                  kb.yukle(frekans="1h") is None)
+        finally:
+            kb.DATA, kb.CIKTI = eski_data, eski_cikti
+finally:
+    kv.KAYIT.pop(TEST_ID, None)
 
 print()
 if fails:

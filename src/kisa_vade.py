@@ -42,13 +42,44 @@ import pandas as pd
 
 from . import indicators as ind
 
-# Kurulum bulunmasi icin gereken en az bar sayisi. 200 gunluk ortalama
+# Kurulum bulunmasi icin gereken en az bar sayisi. 200 barlik ortalama
 # kullanan dedektorler var; altinda hepsi NaN doner.
 MIN_BAR = 220
 
-# Kisa vade ufuklari (islem gunu). Kalibrasyon bunlarin hepsini olcer;
-# varsayilan raporlama 5 gun.
-UFUKLAR = (3, 5, 10)
+# DEDEKTORLER BAR-GORELIDIR, gun-goreli degil.
+# "MA200 ustunde" sarti, gunluk barda ~10 aylik trend demek; saatlik barda
+# 200 bar ~28 islem gunu, yani ~6 haftalik trend. Ikisi ayni kod, farkli
+# anlam -- ve bu BILEREK boyle: her frekans kendi olceginde "uzun trend"i
+# tarif etsin istiyoruz. Gunluk trendi saatlik dedektore disaridan
+# gecirmek de mumkundu ama o zaman kurulum iki farkli veri kaynagina
+# bagimli olurdu ve saatlik olcum tek basina yorumlanamazdi.
+#
+# Sonuc: bir kurulumun gunluk ve saatlik kalibrasyonu FARKLI seyler olcer.
+# Bu yuzden ayri dosyalarda tutuluyorlar (bkz. kalibrasyon.py).
+
+# UFUKLAR BAR CINSINDEN. Frekansa gore anlami degisir ve bu AYRIMI acikca
+# tasimak sart: gunluk barda 5 = 5 gun, saatlik barda 5 = 5 saat. Ikisi ayni
+# dosyaya yazilirsa "5 ufkunda %52" cumlesi anlamsizlasir.
+UFUKLAR_BAR = {
+    "1d": (3, 5, 10),        # 3 gun · 1 hafta · 2 hafta
+    "1h": (3, 7, 21),        # ~yarim gun · 1 gun · 3 gun  (~7 bar/gun)
+    "30m": (7, 14, 42),      # ~yarim gun · 1 gun · 3 gun  (~14 bar/gun)
+    "15m": (13, 26, 78),     # ~yarim gun · 1 gun · 3 gun  (~26 bar/gun)
+}
+VARSAYILAN_FREKANS = "1d"
+
+
+def ufuklar(frekans: str = VARSAYILAN_FREKANS) -> tuple[int, ...]:
+    return UFUKLAR_BAR.get(frekans, UFUKLAR_BAR[VARSAYILAN_FREKANS])
+
+
+def bar_gun(frekans: str) -> float:
+    """Gunde kac bar. Etkin orneklem hesabinda gerekiyor."""
+    return {"1d": 1.0, "1h": 7.0, "30m": 14.0, "15m": 26.0}.get(frekans, 1.0)
+
+
+# Geriye donuk ad: gunluk ufuklar.
+UFUKLAR = UFUKLAR_BAR["1d"]
 VARSAYILAN_UFUK = 5
 
 
@@ -431,7 +462,8 @@ def tespit(df: pd.DataFrame, kurulumlar: "list[str] | None" = None
     return out
 
 
-def bugun(df: pd.DataFrame, ticker: str = "") -> list[dict]:
+def bugun(df: pd.DataFrame, ticker: str = "",
+          frekans: str = VARSAYILAN_FREKANS) -> list[dict]:
     """Serinin SON barinda olusan kurulumlar."""
     if df is None or len(df) < MIN_BAR:
         return []
@@ -445,10 +477,12 @@ def bugun(df: pd.DataFrame, ticker: str = "") -> list[dict]:
         out.append({
             "ticker": ticker,
             "tarih": str(pd.Timestamp(son).date()),
+            "zaman": str(pd.Timestamp(son)),
+            "frekans": frekans,
             "kurulum": kid,
             "ad_tr": k.ad_tr,
             "yon": k.yon,
-            "ufuk": k.ufuk,
+            "ufuk": _kurulum_ufku(k, frekans),
             "guc": round(float(t[(kid, "guc")].iloc[-1]), 3),
             "oynaklik": ks["oynaklik"].iloc[-1],
             "likidite": ks["likidite"].iloc[-1],
@@ -458,19 +492,36 @@ def bugun(df: pd.DataFrame, ticker: str = "") -> list[dict]:
     return out
 
 
-def tara(bundles: dict, kurulumlar: "list[str] | None" = None) -> pd.DataFrame:
-    """Butun evrende bugunku kurulumlar."""
+def _kurulum_ufku(k: Kurulum, frekans: str) -> int:
+    """Kurulumun dogal ufkunu o frekansin bar cinsine cevirir.
+
+    Gunluk 5 gunluk bir kurulum, saatlikte 5 SAAT degil ~5 GUN olmali --
+    kurulumun mantigi degismiyor, olcum birimi degisiyor. Ama ufuk, o
+    frekansin olculen ufuklarindan biri olmali ki kalibrasyonda karsiligi
+    bulunsun; bu yuzden en yakinina yuvarlaniyor.
+    """
+    if frekans == VARSAYILAN_FREKANS:
+        return k.ufuk
+    hedef = k.ufuk * bar_gun(frekans)
+    aday = ufuklar(frekans)
+    return min(aday, key=lambda u: abs(u - hedef))
+
+
+def tara(bundles: dict, kurulumlar: "list[str] | None" = None,
+         frekans: str = VARSAYILAN_FREKANS) -> pd.DataFrame:
+    """Butun evrende son bardaki kurulumlar."""
     satirlar = []
     for tk, b in (bundles or {}).items():
-        h = (b or {}).get("history")
+        h = b.get("history") if isinstance(b, dict) else b
         if h is None or len(h) < MIN_BAR:
             continue
         try:
-            satirlar.extend(bugun(h, tk))
+            satirlar.extend(bugun(h, tk, frekans))
         except Exception:
             continue
     if not satirlar:
-        return pd.DataFrame(columns=["ticker", "tarih", "kurulum", "ad_tr", "yon",
-                                     "ufuk", "guc", "oynaklik", "likidite",
-                                     "trend_konumu", "fiyat"])
+        return pd.DataFrame(columns=["ticker", "tarih", "zaman", "frekans",
+                                     "kurulum", "ad_tr", "yon", "ufuk", "guc",
+                                     "oynaklik", "likidite", "trend_konumu",
+                                     "fiyat"])
     return pd.DataFrame(satirlar)

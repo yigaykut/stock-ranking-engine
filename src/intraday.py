@@ -118,6 +118,25 @@ def cek(sembol: str, interval: str = "1h", period: str | None = None,
         should_cache=lambda h: h is not None and len(h) >= 50)
 
 
+def oku(sembol: str, interval: str = "1h", period: str | None = None,
+        max_gun: float = 3.0) -> pd.DataFrame | None:
+    """ONBELLEKTEN okur, ag istegi YAPMAZ.
+
+    Tarama ile cekim ayri isler. `cek()` gerekirse aga cikar; tarama bunu
+    yapmamali -- yoksa "bugunku kurulumlari goster" komutu sessizce 150
+    sembollük bir indirme isine donusur ve hiz sinirini yer. Veri yoksa
+    cevap None'dur ve cagiran taraf kullaniciyi cekime yonlendirir.
+    """
+    p = period or ISTEK.get(interval, "60d")
+    hit = cache.peek("yahoo_intraday", f"{sembol}:{interval}:{p}")
+    if not hit:
+        return None
+    veri, yas = hit
+    if yas > max_gun * 24 * 3600:
+        return None
+    return veri if isinstance(veri, pd.DataFrame) and len(veri) else None
+
+
 def olcum(h: pd.DataFrame | None) -> dict:
     """Bir cekimin kapsami: bar, farkli gun, tarih araligi, bar/gun."""
     if h is None or not len(h):

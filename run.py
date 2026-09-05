@@ -1974,6 +1974,46 @@ def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
     return out
 
 
+def _kisa_bundles(args: argparse.Namespace) -> dict:
+    """Frekansa gore bar kaynagi.
+
+    Gunluk: tum evrenin onbellegi (2700+ hisse).
+    Gun ici: YALNIZCA havuz. Iki sebep -- gun ici veri havuz disinda zaten
+    cekilmiyor, ve cekilseydi hiz sinirina carpardi.
+    """
+    from src import havuz as hv
+    from src import intraday as idy
+
+    if args.frekans == "1d":
+        b = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        if not b:
+            print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
+                  file=sys.stderr)
+        return b
+
+    semboller = hv.semboller()
+    if not semboller:
+        print("HATA: havuz yok. Once: python run.py havuz", file=sys.stderr)
+        return {}
+    if args.limit:
+        semboller = semboller[:args.limit]
+    out = {}
+    for sym in semboller:
+        h = idy.oku(sym, args.frekans)           # ONBELLEK; ag istegi YOK
+        if h is not None and len(h) >= kisa_min_bar():
+            out[sym] = {"history": h}
+    if not out:
+        print(f"HATA: {args.frekans} barlari yok. Once: "
+              f"python run.py intraday cek --interval {args.frekans}",
+              file=sys.stderr)
+    return out
+
+
+def kisa_min_bar() -> int:
+    from src import kisa_vade as kv
+    return kv.MIN_BAR
+
+
 def _kisa_bench(args: argparse.Namespace):
     """Karsilastirma endeksi. Yoksa acikca uyarir.
 
@@ -2009,20 +2049,20 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         print("=" * 74)
         print("Onbellekteki gunluk barlar taraniyor (ag istegi yok)...",
               flush=True)
-        bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        bundles = _kisa_bundles(args)
         if not bundles:
-            print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
-                  file=sys.stderr)
             return 1
-        print(f"  {len(bundles)} hisse", flush=True)
+        print(f"  {len(bundles)} hisse · frekans {args.frekans} · "
+              f"ufuklar {kv.ufuklar(args.frekans)} bar", flush=True)
 
         bench = _kisa_bench(args)
 
         def ilerleme(i, islenen):
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
 
-        payload = kb.kur(bundles, bench, ufuklar=kv.UFUKLAR,
-                         min_bar=kv.MIN_BAR, ilerleme=ilerleme)
+        payload = kb.kur(bundles, bench, ufuklar=kv.ufuklar(args.frekans),
+                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
+                         frekans=args.frekans)
         yol = kb.kaydet(payload)
         _kalibrasyon_tablosu(payload)
         print()
@@ -2033,17 +2073,16 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         print("=" * 74)
         print("KISA VADE META-ETIKET PANELI")
         print("=" * 74)
-        bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        bundles = _kisa_bundles(args)
         if not bundles:
-            print("HATA: onbellekte gunluk bar yok.", file=sys.stderr)
             return 1
-        print(f"  {len(bundles)} hisse", flush=True)
+        print(f"  {len(bundles)} hisse · frekans {args.frekans}", flush=True)
         bench = _kisa_bench(args)
 
         def ilerleme(i, islenen):
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
 
-        ozet = kb.panel(bundles, bench, ufuklar=kv.UFUKLAR,
+        ozet = kb.panel(bundles, bench, ufuklar=kv.ufuklar(args.frekans),
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
@@ -2068,14 +2107,12 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         return 0
 
     # --- bugunku tarama
-    kalib = kb.yukle()
-    bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+    kalib = kb.yukle(frekans=args.frekans)
+    bundles = _kisa_bundles(args)
     if not bundles:
-        print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
-              file=sys.stderr)
         return 1
 
-    tablo = kv.tara(bundles)
+    tablo = kv.tara(bundles, frekans=args.frekans)
     if tablo.empty:
         print("Bugun hicbir kurulum olusmadi.")
         return 0
@@ -2100,10 +2137,16 @@ def cmd_kisa(args: argparse.Namespace) -> int:
 
     _kisa_tablo(satirlar, kalib)
 
+    # CIKTI DOSYASI FREKANSA GORE AYRI. Panonun okudugu dosya gunluk olan;
+    # saatlik tarama onu EZMEMELI. Ilk surumde ayni dosyaya yaziliyordu ve
+    # saatlik bir kosu, panoyu saatlik sinyallerle doldurup gunluk olanlari
+    # siliyordu -- ayni kategoriden hatayi ufuk arsivlerinde de yapmistik.
     OUT.mkdir(parents=True, exist_ok=True)
-    yol = OUT / "kisa_vade.json"
+    yol = (OUT / "kisa_vade.json" if args.frekans == "1d"
+           else OUT / f"kisa_vade_{args.frekans}.json")
     yol.write_text(json.dumps({
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "frekans": args.frekans,
         "kalibrasyon_tarihi": (kalib or {}).get("generated_at"),
         "sinyal_sayisi": len(satirlar),
         "sinyaller": satirlar,
@@ -2493,6 +2536,11 @@ def main() -> int:
                       help="tara: bugunku kurulumlar - kalibre: gecmisten "
                            "guven degerlerini olc - panel: ileride egitilecek "
                            "model icin satir satir ozellik+sonuc tablosu")
+    kv_p.add_argument("--frekans", default="1d",
+                      choices=["1d", "1h", "30m", "15m"],
+                      help="bar frekansi. 1d tum evreni, gun ici olanlar "
+                           "YALNIZCA havuzu kullanir. Ufuklar BAR cinsindendir "
+                           "ve frekansa gore degisir.")
     kv_p.add_argument("--period", default="2y", help="onbellek gecmis araligi")
     kv_p.add_argument("--cache-days", type=int, default=30,
                       help="onbellekte bu kadar gunden eski kayit kullanilmaz")

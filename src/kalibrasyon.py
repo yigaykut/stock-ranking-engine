@@ -74,18 +74,24 @@ def wilson(k: int, n: int, z: float = 1.96) -> tuple[float, float]:
     return (max(0.0, merkez - yari), min(1.0, merkez + yari))
 
 
-def etkin_n(n_sinyal: int, n_gun: int, ufuk: int) -> float:
+def etkin_n(n_sinyal: int, n_gun: int, ufuk: int,
+            bar_gun: float = 1.0) -> float:
     """Bagimsiz sayilabilecek gozlem sayisi.
 
     Iki kirilim birden:
       - ayni gun icindeki sinyaller tek bir piyasa gunu yasar -> gun sayisi
-      - ardisik gunlerin N gunluk sonuclari ortusur      -> gun / ufuk
+      - ardisik gunlerin sonuclari ortusur -> gun / (ufkun GUN cinsinden hali)
+
+    `bar_gun`: gunde kac bar. Saatlik veride ufuk BAR cinsindendir; 21 barlik
+    bir ufuk 21 gun degil ~3 gun ortusme demektir. Gunluk veride bar_gun=1
+    oldugu icin formul eskisiyle ayni kalir.
 
     Alt sinir 1; ust sinir ham sinyal sayisi (etkin, hamdan buyuk olamaz).
     """
     if n_sinyal <= 0 or n_gun <= 0:
         return 0.0
-    return float(max(1.0, min(float(n_sinyal), n_gun / max(1.0, float(ufuk)))))
+    ufuk_gun = float(ufuk) / max(1e-9, float(bar_gun))
+    return float(max(1.0, min(float(n_sinyal), n_gun / max(1.0, ufuk_gun))))
 
 
 def buzulmus(k: int, n: int, taban: float, guc: float = BUZME) -> float:
@@ -161,8 +167,9 @@ class Toplayici:
     toplaniyor: 2800 hisse x 500 bar x 12 kurulum tek bir tabloya sigmaz.
     """
 
-    def __init__(self, ufuklar: "tuple[int, ...]"):
+    def __init__(self, ufuklar: "tuple[int, ...]", bar_gun: float = 1.0):
         self.ufuklar = tuple(ufuklar)
+        self.bar_gun = float(bar_gun)
         # anahtar: (kurulum, ufuk, kosul_adi, kosul_degeri)
         self._sayim: dict[tuple, dict] = {}
         # taban oran icin: tum bar-gun ciftleri
@@ -171,12 +178,19 @@ class Toplayici:
     def _kova(self, anahtar: tuple) -> dict:
         d = self._sayim.get(anahtar)
         if d is None:
-            d = {"n": 0, "k": 0, "gunler": set(), "getiriler": []}
+            d = {"n": 0, "k": 0, "gunler": set(), "getiriler": [],
+                 "yon": "long"}
             self._sayim[anahtar] = d
         return d
 
-    def taban_ekle(self, ufuk: int, kazanc: pd.Series) -> None:
-        g = kazanc.dropna()
+    def taban_ekle(self, ufuk: int, fazla: pd.Series) -> None:
+        """Taban orani: rastgele bir bar-hisse, endeksi gecme orani.
+
+        Kisa taraf icin tabani ayrica tutmuyoruz; P(fazla<0) = 1 - P(fazla>0)
+        (tam sifirlar ihmal edilebilir) oldugu icin `taban_orani` yonu
+        parametre aliyor.
+        """
+        g = fazla.dropna()
         if not len(g):
             return
         self._taban[ufuk]["n"] += int(len(g))
@@ -184,8 +198,16 @@ class Toplayici:
 
     def ekle(self, kurulum: str, ufuk: int, tarihler: pd.Index,
              kazanc: pd.Series, getiri: pd.Series,
-             kosullar: "list[tuple[str, pd.Series]]") -> None:
-        """Bir hissenin bir kurulumu icin sayimlari ekler."""
+             kosullar: "list[tuple[str, pd.Series]]",
+             yon: str = "long") -> None:
+        """Bir hissenin bir kurulumu icin sayimlari ekler.
+
+        `kazanc` YONE GORE tanimlanmis olarak gelir: uzun tarafta "endeksi
+        gecti", kisa tarafta "endeksin ALTINDA kaldi". Ikisini de "endeksi
+        gecti" diye saymak, cikis sinyallerini tersten okumak olurdu --
+        dagitim gunu icin +%5 kenar, kurulumun CALISTIGINI degil
+        CALISMADIGINI gosterirdi.
+        """
         gecerli = kazanc.notna()
         if not gecerli.any():
             return
@@ -202,6 +224,7 @@ class Toplayici:
                 return
             d["n"] += int(len(kk))
             d["k"] += int(kk.sum())
+            d["yon"] = yon
             d["gunler"].update(pd.Series(tt).dt.date.tolist())
             # Getiri dagilimi icin ornek tutulur; hepsini tutmak gereksiz.
             if len(d["getiriler"]) < 5000:
@@ -213,9 +236,10 @@ class Toplayici:
             for deger in pd.unique(s.dropna()):
                 _yaz((kurulum, ufuk, ad, str(deger)), (s == deger).to_numpy())
 
-    def taban_orani(self, ufuk: int) -> float:
+    def taban_orani(self, ufuk: int, yon: str = "long") -> float:
         t = self._taban.get(ufuk) or {}
-        return (t["k"] / t["n"]) if t.get("n") else 0.5
+        p = (t["k"] / t["n"]) if t.get("n") else 0.5
+        return p if yon != "short" else 1.0 - p
 
     def rapor(self) -> list[dict]:
         out = []
@@ -223,13 +247,14 @@ class Toplayici:
             n, k = d["n"], d["k"]
             if n < MIN_HAM:
                 continue
-            taban = self.taban_orani(ufuk)
-            ne = etkin_n(n, len(d["gunler"]), ufuk)
+            taban = self.taban_orani(ufuk, d.get("yon", "long"))
+            ne = etkin_n(n, len(d["gunler"]), ufuk, self.bar_gun)
             lo, hi = wilson(int(round(k * ne / n)), int(round(ne)))
             p = buzulmus(k, n, taban)
             gt = np.asarray(d["getiriler"], dtype=float)
             out.append({
                 "kurulum": kurulum,
+                "yon": d.get("yon", "long"),
                 "ufuk": int(ufuk),
                 "kosul": kosul,
                 "deger": deger,
@@ -255,7 +280,8 @@ class Toplayici:
 # =============================================================================
 def kur(bundles: dict, bench_close: "pd.Series | None" = None,
         ufuklar: "tuple[int, ...]" = (3, 5, 10),
-        min_bar: int = 220, ilerleme: "callable | None" = None) -> dict:
+        min_bar: int = 220, ilerleme: "callable | None" = None,
+        frekans: str = "1d") -> dict:
     """Onbellekteki gunluk barlardan kalibrasyon uretir.
 
     `bench_close` verilirse kazanc "endeksten iyi" demektir; verilmezse
@@ -264,7 +290,7 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
     """
     from . import kisa_vade as kv
 
-    top = Toplayici(ufuklar)
+    top = Toplayici(ufuklar, bar_gun=kv.bar_gun(frekans))
     bench = _bench_hazirla(bench_close)
 
     islenen = hatali = 0
@@ -291,16 +317,18 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
                     fazla = getiri - bgetiri
                 else:
                     fazla = getiri
-                kazanc = (fazla > 0).where(fazla.notna())
-
-                top.taban_ekle(ufuk, kazanc)
-                for kid in kv.KAYIT:
+                top.taban_ekle(ufuk, fazla)
+                uzun = (fazla > 0).where(fazla.notna())
+                kisa = (fazla < 0).where(fazla.notna())
+                for kid, kur_ in kv.KAYIT.items():
                     var = t[(kid, "var")].to_numpy()
                     if not var.any():
                         continue
+                    kazanc = kisa if kur_.yon == "short" else uzun
                     top.ekle(kid, ufuk, df.index[var], kazanc[var],
                              fazla[var],
-                             [(ad, s[var]) for ad, s in dilimler])
+                             [(ad, s[var]) for ad, s in dilimler],
+                             yon=kur_.yon)
             islenen += 1
         except Exception:
             hatali += 1
@@ -311,7 +339,10 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
     kovalar = top.rapor()
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
-        "kaynak": "onbellek gunluk barlar",
+        "frekans": frekans,
+        "bar_gun": kv.bar_gun(frekans),
+        "ufuk_birimi": "bar",
+        "kaynak": f"onbellek {frekans} barlar",
         "kazanc_tanimi": ("endeksten iyi" if bench is not None
                           else "pozitif getiri (ENDEKSSIZ - zayif olcum)"),
         "hisse": islenen,
@@ -345,6 +376,18 @@ def _notlar(kovalar: list, top: "Toplayici", ufuklar) -> list[str]:
             out.append("Hicbir kovanin alt guven siniri taban oranin ustunde "
                        "degil. Yani olculen hicbir kurulum, 'rastgele bir gun' "
                        "olmaktan ayirt edilemiyor.")
+    n_kova = len(kovalar)
+    beklenen = n_kova * 0.025           # tek yonlu, %95 aralik
+    gecen = [k for k in kovalar if k["durum"] == "olculdu"
+             and k["alt"] > k["taban"]]
+    out.append(
+        f"COKLU TEST: {n_kova} kova %95 araligiyla test edildi. Hicbir kenar "
+        f"olmasa bile sansa {beklenen:.0f} civari kova esigi gecerdi. "
+        f"Gecen: {len(gecen)}. "
+        + ("Bu, sanstan BEKLENENIN ALTINDA -- yani gecenler de kanit sayilmaz."
+           if len(gecen) <= beklenen else
+           "Gecen sayisi sans beklentisinin uzerinde, ama tek tek hangisinin "
+           "gercek oldugu bu tabloyla soylenemez."))
     out.append("Guven degeri bir SAYIMDIR, tahmin degil: gecmiste bu kurulum "
                "olustugunda kac kez endeks gecildi. Gelecek icin garanti "
                "vermez.")
@@ -357,22 +400,68 @@ def _notlar(kovalar: list, top: "Toplayici", ufuklar) -> list[str]:
 # =============================================================================
 #  Okuma / yazma ve sorgulama
 # =============================================================================
+def _frekans_yolu(frekans: str) -> Path:
+    return DATA / f"kisa_vade_kalibrasyon_{frekans}.json"
+
+
 def kaydet(payload: dict, path: Path | None = None) -> Path:
+    """Kalibrasyonu yazar: frekansa ozel arsiv + "en son kosan" kopyasi.
+
+    Frekans basina ayri dosya SART. Gunluk ve saatlik kalibrasyon farkli
+    seyler olcuyor -- dedektorlerin trend suzgeci bar-goreli, yani saatlikte
+    ~6 haftalik, gunlukte ~10 aylik bir trendi tarif ediyor. Tek dosyada
+    tutulsalardi ikinci kosu birincisini ezerdi; ayni hatayi faktor
+    analizinde bir kez yaptik (bkz. faktor_zaman.save).
+    """
     p = path or CIKTI
     p.parent.mkdir(parents=True, exist_ok=True)
-    p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
-                 encoding="utf-8")
+    govde = json.dumps(payload, ensure_ascii=False, indent=1)
+    p.write_text(govde, encoding="utf-8")
+    if path is None and payload.get("frekans"):
+        _frekans_yolu(payload["frekans"]).write_text(govde, encoding="utf-8")
     return p
 
 
-def yukle(path: Path | None = None) -> dict | None:
-    p = path or CIKTI
+def yukle(path: Path | None = None, frekans: str | None = None) -> dict | None:
+    """frekans verilirse o frekansin arsivi, verilmezse en son kosan.
+
+    ESKI DOSYA GERI UYUMU: frekans alani, gun ici destegi eklenince (05.09.2026)
+    geldi. Ondan onceki kalibrasyonlarda alan yok ve hepsi GUNLUKTU. Arsiv
+    dosyasi bulunamazsa kanonik dosyaya bakilir; oradaki kayit istenen
+    frekanstaysa (ya da alansizsa ve "1d" isteniyorsa) o kullanilir.
+    Bu olmadan, gun ici destegi eklendigi anda gunluk guven degerleri
+    "bilinmiyor"a duserdi -- calisan bir seyi bozmak.
+    """
+    if path is not None:
+        p = path
+    elif frekans:
+        p = _frekans_yolu(frekans)
+        if not p.exists():
+            kanonik = _oku(CIKTI)
+            if kanonik and (kanonik.get("frekans") or "1d") == frekans:
+                return kanonik
+            return None
+    else:
+        p = CIKTI
+    return _oku(p)
+
+
+def _oku(p: Path) -> dict | None:
     if not p.exists():
         return None
     try:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def kayitli_frekanslar() -> list[str]:
+    out = []
+    for f in DATA.glob("kisa_vade_kalibrasyon_*.json"):
+        ad = f.stem.replace("kisa_vade_kalibrasyon_", "")
+        if ad:
+            out.append(ad)
+    return sorted(out)
 
 
 def guven(kalib: dict | None, kurulum: str, ufuk: int,
