@@ -235,6 +235,80 @@ zaten çalışan bir cevap veriyor.
 
 ---
 
+## İlk gerçek ölçüm (05.09.2026)
+
+2641 hisse, ~2 yıllık günlük bar, kazanç tanımı "endeksten iyi".
+
+**Taban oranları: 3g %48 · 5g %48 · 10g %47.**
+
+Bu tek başına dikkate değer: rastgele bir küçük/orta ölçekli hisse günü, SPY'ı
+**yarıdan az** oranda geçiyor. Medyan hisse endeksin altında kalıyor — endeks
+birkaç dev hisseyle taşınıyor. Yani "kazanma oranı %50" bile taban oranın
+üstünde bir sonuçtur.
+
+### 330 kova, 328'i ölçüldü, **hiçbiri tabanı aşmıyor**
+
+Tek bir kovanın bile alt güven sınırı taban oranın üstünde değil. Ölçülen
+hiçbir kurulum, "rastgele bir gün" olmaktan ayırt edilemiyor.
+
+### Ama işaretlerde bir desen var
+
+| Kurulum | 3g | 5g | 10g | ort |
+|---|---:|---:|---:|---:|
+| rsi2_asiri_satim | +0.033 | +0.027 | +0.029 | **+0.030** |
+| uc_gun_geri_cekilme | +0.027 | +0.024 | +0.020 | **+0.024** |
+| boga_yutan | −0.001 | +0.014 | +0.015 | +0.010 |
+| dagitim_gunu | +0.008 | +0.005 | +0.010 | +0.007 |
+| yutan_ayi | −0.009 | −0.000 | −0.001 | −0.003 |
+| bollinger_sikismasi | −0.007 | −0.006 | +0.001 | −0.004 |
+| hacimli_kirilim | −0.003 | −0.008 | −0.008 | −0.006 |
+| nr7_ic_bar | −0.011 | −0.009 | −0.002 | −0.007 |
+| ma20_geri_cekilme | −0.012 | −0.007 | −0.003 | −0.007 |
+| bosluk_dolumu | −0.023 | −0.018 | −0.011 | −0.017 |
+| cekic | −0.028 | −0.017 | −0.012 | −0.019 |
+| hacim_kurumasi | −0.023 | −0.026 | −0.018 | **−0.022** |
+
+Üstteki iki sıra **ortalamaya dönüş** kurulumu: aşırı satım ve geri çekilme.
+Alttaki sıralar **kırılım ve trend** kurulumları. Ayrım temiz.
+
+Ve bu, uzun vade tarafındaki bulguyla **aynı yöne bakıyor**: orada da trend
+ailesinin tamamı ölçüm penceresinin ikinci yarısında gücünü kaybediyordu
+(bkz. [OGRENME.md](OGRENME.md), zaman/rejim kırılımı). İki bağımsız ölçüm,
+farklı yöntemlerle, aynı şeyi söylüyor.
+
+**Ama bu bir sonuç değil, bir hipotez.** Üç sebeple:
+
+1. Hiçbiri anlamlılık eşiğini geçmiyor. En büyük edge +0.033, aralığı
+   0.43–0.59 ve taban 0.48 aralığın içinde.
+2. Üç ufkun işaretleri **bağımsız değil** — örtüşen pencerelerden geliyorlar.
+   "12 kurulumun 10'unda üç ufuk da aynı yönde" cümlesi kulağa güçlü geliyor
+   ama o 10, bağımsız 10 gözlem değil.
+3. Tek bir 2 yıllık pencere, ve o pencerede uzun bir düşüş rejimi yok.
+
+### En kötü kovalar da tutarlı
+
+```
+hacimli_kirilim  10g  oynaklik=sakin   edge -0.062
+cekic             5g  oynaklik=sakin   edge -0.047
+cekic             3g  oynaklik=sakin   edge -0.047
+hacimli_kirilim   5g  oynaklik=sakin   edge -0.044
+```
+
+Sakin piyasada kırılım. Oynaklık genişlemesi olmadan olan kırılım, kırılım
+sayılmıyor — kalıp gerçekleşiyor ama arkasında hareket yok. Yine anlamlı değil,
+yine yönü mantıklı.
+
+### Pratikte ne anlama geliyor
+
+Panoda **hiçbir satır yıldız almıyor.** Sistem her kurulumu buluyor, her biri
+için sayımı gösteriyor ve hiçbiri için "bu ayırt edilebilir" demiyor. Tasarım
+böyle: eşiği geçen bir şey çıkana kadar hepsi eşit derecede kanıtsız.
+
+İşlem maliyeti de düşülmedi. Ölçülen en büyük kenar %3.3; ince likiditede
+alış-satış farkı tek başına bunu yiyebilir.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir

@@ -694,6 +694,53 @@ confidence for an edge that isn't there. The same test finds a planted edge when
 there is one (+0.30, lower bound 0.887 against a base of 0.662), so it's two
 separate claims: it sees a real edge, and it doesn't invent one.
 
+### First real measurement
+
+2,641 stocks, ~2 years of daily bars, "beating the index" as the win condition.
+
+Base rates: **48% at 3 days, 48% at 5, 47% at 10.** Worth noting on its own — a
+random small/mid-cap day beats SPY less than half the time. The median stock
+trails the index; the index is carried by a handful of large ones. So a 50% hit
+rate is already above base here.
+
+**330 buckets, 328 measured, none clears its base rate.** Not one lower bound
+sits above the base. Nothing measured can be told apart from a random day.
+
+There is a pattern in the signs, though:
+
+| Setup | 3d | 5d | 10d | avg |
+|---|---:|---:|---:|---:|
+| rsi2_asiri_satim | +0.033 | +0.027 | +0.029 | **+0.030** |
+| uc_gun_geri_cekilme | +0.027 | +0.024 | +0.020 | **+0.024** |
+| boga_yutan | −0.001 | +0.014 | +0.015 | +0.010 |
+| hacimli_kirilim | −0.003 | −0.008 | −0.008 | −0.006 |
+| ma20_geri_cekilme | −0.012 | −0.007 | −0.003 | −0.007 |
+| bosluk_dolumu | −0.023 | −0.018 | −0.011 | −0.017 |
+| cekic | −0.028 | −0.017 | −0.012 | −0.019 |
+| hacim_kurumasi | −0.023 | −0.026 | −0.018 | **−0.022** |
+
+The two at the top are mean-reversion setups. The ones at the bottom are
+breakout and trend setups. The split is clean, and it points the same way as the
+factor work did — there the whole trend family gave back its edge in the second
+half of the window.
+
+It is a hypothesis, not a result. Nothing clears significance; the largest edge
+is +0.033 with an interval of 0.43–0.59 around a base of 0.48. The three
+horizons are not independent readings either, since their windows overlap, so
+"10 of 12 setups agree across horizons" is not ten independent observations. And
+it's one two-year window with no extended downturn in it.
+
+The worst buckets are consistent in the same way: breakouts in *calm*
+volatility, −0.062 for a 10-day volume breakout. A breakout without volatility
+expansion isn't a breakout — the pattern fires, nothing follows.
+
+In practice: no row on the dashboard gets a star. The system finds every setup,
+shows the count for each, and claims distinguishability for none. That's the
+design working, not failing.
+
+Transaction costs aren't deducted either. The largest measured edge is 3.3%; in
+thin liquidity the spread alone can eat that.
+
 ### Which conditions it works in
 
 Every signal is recorded with its environment — volatility, liquidity, distance
