@@ -431,6 +431,77 @@ python run.py havuz
 
 ---
 
+## Saatlik ölçüm (05.09.2026)
+
+Havuzun 147 sembolü, saatlik bar. Ölçülen kapsam: medyan **5.082 bar / 730
+farklı gün**, 2023-10-09 → 2026-09-04. Yani ~3 yıl.
+
+Bu, zaman dilimi kararının doğrulanması: 15 dakikada 60 gün, 1 dakikada 7 gün
+alabiliyorken saatlikte 730 gün var.
+
+### Ölçümün keskinliği gerçekten arttı
+
+| | günlük | saatlik |
+|---|---:|---:|
+| etkin örneklem (tipik) | 40–160 | **490–500** |
+| aralık genişliği | ±0.12 | **±0.04** |
+
+Beklenen kazanç bu: daha çok bağımsız gün → daha dar aralık → gerçek bir kenar
+varsa görünme şansı yüksek.
+
+### Ve hiçbir şey görünmüyor
+
+| Kurulum | Yön | 3b | 7b | 21b | ort |
+|---|---|---:|---:|---:|---:|
+| rsi2_asiri_satim | long | +0.011 | −0.001 | −0.011 | −0.000 |
+| uc_gun_geri_cekilme | long | +0.010 | −0.000 | −0.013 | −0.001 |
+| yutan_ayi | short | −0.013 | −0.001 | +0.006 | −0.003 |
+| nr7_ic_bar | long | −0.013 | −0.014 | −0.037 | −0.021 |
+| bollinger_sikismasi | long | −0.016 | −0.026 | −0.023 | −0.022 |
+| hacim_kurumasi | long | −0.011 | −0.021 | −0.036 | −0.023 |
+| ma20_geri_cekilme | long | −0.017 | −0.020 | −0.032 | −0.023 |
+| boga_yutan | long | −0.023 | −0.025 | −0.022 | −0.023 |
+| cekic | long | −0.028 | −0.030 | −0.029 | −0.029 |
+| hacimli_kirilim | long | −0.031 | −0.029 | −0.033 | −0.031 |
+| dagitim_gunu | short | −0.038 | −0.021 | −0.045 | −0.034 |
+
+279 kovadan **1 tanesi** tabanı aşıyor. Çoklu test hesabı: %95 aralıkla 279
+kova test edilince hiç kenar olmasa bile şansa ~7 kova geçer. **1, şans
+beklentisinin altında** — yani geçen o tek kova da kanıt sayılmaz. Bu satır
+artık çıktının kendisinde.
+
+Günlükteki "ortalamaya dönüş pozitif / kırılım negatif" ayrımı saatlikte
+**silinmiş**: `rsi2` ve `uc_gun` sıfıra oturuyor. Ölçüm keskinleşince desen
+kayboldu — bu, desenin gürültü olduğuna dair günlük tablodan daha güçlü bir
+işaret.
+
+### Bir hipotez: kısa vadede geri verme
+
+Neredeyse hepsi negatif, ve **en negatif olanlar bir hareketin ARDINDAN
+tetiklenenler**: hacimli kırılım −0.031, çekiç −0.029, dağıtım günü −0.034.
+Saatlik ölçekte kısa vadeli geri dönüşle tutarlı: yeni hareket eden biraz geri
+veriyor. Hepsi aralıkların içinde, yani kanıt değil — ama not edilmeye değer.
+
+### Yön hatası — düzeltilmeden önce ve sonra
+
+İlk saatlik koşuda `dagitim_gunu` **+0.034** vermişti ve tabanı aşan iki
+kovadan biriydi. Sebep: bütün kurulumlar "endeksi geçti mi" diye sayılıyordu,
+çıkış sinyalleri dahil. Bir dağıtım günü sonrası hissenin endeksi geçmesi,
+kurulumun **çalıştığını değil çalışmadığını** gösterir.
+
+Düzeltme sonrası aynı kurulum **−0.034**, ve listedeki en kötü satır. İşaret
+tam tersine döndü.
+
+Artık kazanç yöne göre tanımlı: uzun tarafta "endeksi geçti", kısa tarafta
+"endeksin altında kaldı", taban oranı da tümleyen. Test: aynı dedektör iki
+yönde kayıtlı → +0.323 ve −0.323.
+
+Bu hatanın önemi büyüklüğünden değil türünden: sistem bir çıkış sinyalinin
+başarısızlığını başarı olarak raporluyordu, ve sayı makul göründüğü için
+kendiliğinden fark edilmezdi.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
