@@ -699,3 +699,62 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             f"{u}g": round(float(tablo[f"kazanc_{u}g"].notna().mean()), 4)
             for u in ufuklar},
     }
+
+
+# =============================================================================
+#  Triple-barrier labels
+# =============================================================================
+def uc_bariyer(high: pd.Series, low: pd.Series, close: pd.Series,
+               atr: pd.Series, ufuk: int, ust_k: float = 1.5,
+               alt_k: float = 1.0) -> pd.Series:
+    """Which came first: the target, the stop, or the clock?
+
+    The label everywhere else is "was the return positive after exactly N
+    bars". That's a snapshot, and a noisy one — a signal can be right for four
+    bars and still get measured on the fifth after it gave everything back.
+
+    This asks the question a trade actually asks. From each bar, walk forward
+    until price touches close*(1 + ust_k*ATR%) or close*(1 - alt_k*ATR%), or
+    until N bars are gone. 1 if the upper came first, 0 if the lower did, NaN
+    if neither did and the clock ran out — those rows carry no answer and
+    shouldn't be counted as losses.
+
+    Barriers scale with ATR rather than being fixed percentages, so a quiet
+    stock and a volatile one are asked an equally hard question.
+
+    The default is asymmetric on purpose: a wider target than stop is the shape
+    most rules of this kind take, and it means the label isn't a coin flip by
+    construction.
+    """
+    h = high.to_numpy(float)
+    l = low.to_numpy(float)
+    c = close.to_numpy(float)
+    a = atr.to_numpy(float)
+    n = len(c)
+    out = np.full(n, np.nan)
+
+    for i in range(n - 1):
+        if not np.isfinite(a[i]) or a[i] <= 0 or not np.isfinite(c[i]):
+            continue
+        ust = c[i] + ust_k * a[i]
+        alt = c[i] - alt_k * a[i]
+        son = min(i + ufuk, n - 1)
+        for j in range(i + 1, son + 1):
+            if h[j] >= ust:
+                out[i] = 1.0
+                break
+            if l[j] <= alt:
+                out[i] = 0.0
+                break
+    return pd.Series(out, index=close.index)
+
+
+def bariyer_etiketleri(df: pd.DataFrame, ufuklar, ust_k: float = 1.5,
+                       alt_k: float = 1.0) -> dict:
+    """Triple-barrier labels for each horizon, keyed by horizon."""
+    from . import indicators as ind
+
+    atr = ind.atr(df["High"], df["Low"], df["Close"], 14)
+    return {u: uc_bariyer(df["High"], df["Low"], df["Close"], atr, u,
+                          ust_k, alt_k)
+            for u in ufuklar}
