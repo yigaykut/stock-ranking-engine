@@ -2174,6 +2174,66 @@ def _kalibrasyon_tablosu(payload: dict) -> None:
         print("  * " + n)
 
 
+def cmd_havuz(args: argparse.Namespace) -> int:
+    """Benzer sirketlerden test havuzu kurar.
+
+    Kisa vade olcumunun en buyuk tehlikesi, olculen farkin kurulumdan degil
+    SIRKET FARKINDAN gelmesi. Havuz bunu kesiyor. Ayrica pratik bir isi daha
+    var: 2755 hisse icin saatlik veri cekmek hiz sinirina carpar, 150 hisse
+    icin carpmaz -- yani havuz olmadan saatlik olcum zaten mumkun degil.
+    """
+    from src import havuz as hv
+
+    bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+    if not bundles:
+        print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
+              file=sys.stderr)
+        return 1
+
+    d = hv.kur(bundles, boyut=args.boyut, en_fazla_sektor=args.sektor_sayisi,
+               min_fiyat=args.min_fiyat, min_dv=args.min_hacim)
+    if not d.get("ok"):
+        print(f"HATA: {d.get('reason')}", file=sys.stderr)
+        return 1
+
+    print("=" * 88)
+    print("TEST HAVUZLARI")
+    print("=" * 88)
+    print(f"  evren {d['evren']} -> olculebilir {d['uygun']} -> "
+          f"{d['havuz_sayisi']} havuz x {args.boyut} hisse")
+    print(f"  agirliklar: "
+          + ", ".join(f"{k}={v}" for k, v in d["agirlik"].items()))
+    print()
+    print(f"  {'SEKTOR':<24}{'UYE':>5}{'ADAY':>6}   "
+          f"{'MCAP':>8}{'HACIM':>10}{'ATR%':>7}   DARALMA (evrene gore)")
+    print("  " + "-" * 84)
+    for h in d["havuzlar"]:
+        md = h["dagilim"]
+        dar = " ".join(f"{k.replace('log_', '')[:4]} {v:.2f}x"
+                       for k, v in h["daralma"].items())
+        print(f"  {h['sektor'][:24]:<24}{h['boyut']:>5}{h['aday_havuzu']:>6}   "
+              f"{md['log_mcap']['havuz']['medyan']:>8.2f}"
+              f"{md['log_dolar_hacim']['havuz']['medyan']:>10.2f}"
+              f"{md['atr_pct']['havuz']['medyan'] * 100:>7.2f}   {dar}")
+    print()
+    print("  MCAP ve HACIM 10 tabanina gore logaritma (8.97 = ~930M$).")
+    print("  DARALMA: havuzun ceyrekler arasi genisligi / evrenin. Kucuk = dar.")
+    print()
+    for h in d["havuzlar"]:
+        print(f"  [{h['sektor']}]")
+        for i in range(0, len(h["uyeler"]), 12):
+            print("    " + ", ".join(h["uyeler"][i:i + 12]))
+    print()
+    for n in d.get("notlar_tr", []):
+        print("  * " + n)
+
+    yol = hv.kaydet(d)
+    print()
+    print(f"Kaydedildi: {yol}")
+    print(f"Toplam {len(hv.semboller(d))} sembol.")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Cok faktorlu hisse yatirim skorlama sistemi",
@@ -2359,6 +2419,20 @@ def main() -> int:
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
 
+    hp = sub.add_parser("havuz", aliases=["pool"],
+                        help="benzer sirketlerden test havuzu kur "
+                             "(kisa vade olcumu icin)")
+    hp.add_argument("--boyut", type=int, default=25,
+                    help="havuz basina hisse sayisi")
+    hp.add_argument("--sektor-sayisi", type=int, default=6,
+                    help="en fazla kac sektorde havuz kurulsun")
+    hp.add_argument("--min-fiyat", type=float, default=5.0)
+    hp.add_argument("--min-hacim", type=float, default=1e6,
+                    help="gunluk dolar hacim alt siniri")
+    hp.add_argument("--period", default="2y")
+    hp.add_argument("--cache-days", type=int, default=30)
+    hp.add_argument("--limit", type=int, default=None)
+
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)
     cp.add_argument("--invalid-only", action="store_true",
@@ -2398,6 +2472,8 @@ def main() -> int:
         return cmd_watch(args)
     if args.cmd == "learn":
         return cmd_learn(args)
+    if args.cmd in ("havuz", "pool"):
+        return cmd_havuz(args)
     if args.cmd in ("kisa", "short"):
         return cmd_kisa(args)
     if args.cmd == "clear-cache":
