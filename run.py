@@ -2234,6 +2234,88 @@ def cmd_havuz(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_intraday(args: argparse.Namespace) -> int:
+    """Gun ici veri: saglayicinin sinirlarini olc, havuzu cek.
+
+    Zaman dilimi karari BURADAN cikar: hangi aralikta kac FARKLI GUN veri
+    geliyor. Bar sayisi degil gun sayisi belirleyici -- ayni gunun barlari
+    tek bir piyasa gunudur.
+    """
+    from src import havuz as hv
+    from src import intraday as idy
+
+    eylem = getattr(args, "intraday_action", "kapsam")
+
+    if eylem == "kapsam":
+        print("=" * 78)
+        print("GUN ICI VERI KAPSAMI")
+        print("=" * 78)
+        print(f"  Olcum sembolu: {args.symbol}  (amac veri toplamak degil, "
+              f"sinirlari ogrenmek)")
+        print()
+        k = idy.kapsam_olc(args.symbol, use_cache=not args.no_cache)
+        print(f"  {'ARALIK':<8}{'ISTENEN':<9}{'BAR':>8}{'GUN':>6}"
+              f"{'BAR/GUN':>9}{'ILK':>13}{'SON':>13}  DURUM")
+        print("  " + "-" * 74)
+        for i, o in k["araliklar"].items():
+            if o.get("hata"):
+                print(f"  {i:<8}{'':<9}{'':>8}{'':>6}{'':>9}{'':>13}{'':>13}"
+                      f"  {o['hata']}")
+                continue
+            durum = ("olculebilir" if o.get("olculebilir")
+                     else f"YETERSIZ (<{idy.MIN_GUN} gun)")
+            print(f"  {i:<8}{o.get('istenen',''):<9}{o['bar']:>8}{o['gun']:>6}"
+                  f"{o.get('bar_gun',0):>9.1f}{o.get('ilk',''):>13}"
+                  f"{o.get('son',''):>13}  {durum}")
+        print()
+        oneri = idy.onerilen_aralik(k)
+        if oneri.get("ok"):
+            print(f"  ONERILEN BIRINCIL ARALIK: {oneri['birincil']}")
+            print(f"  Uygun adaylar: {', '.join(oneri['adaylar'])}")
+        else:
+            print(f"  ONERI YOK: {oneri.get('reason')}")
+        print()
+        print(f"  Olcut FARKLI GUN sayisi (en az {idy.MIN_GUN}). Bar sayisi")
+        print("  yaniltir: 1 dakikalik veride binlerce bar olur ama hepsi")
+        print("  birkac gunden gelir; bagimsiz gozlem sayisi gun sayisidir.")
+        print(f"\n  Kaydedildi: {idy.KAPSAM}")
+        return 0
+
+    # --- havuzu cek
+    hd = hv.yukle()
+    if not hd:
+        print("HATA: havuz yok. Once: python run.py havuz", file=sys.stderr)
+        return 1
+    semboller = hv.semboller(hd, havuz_id=args.havuz)
+    if not semboller:
+        print("HATA: havuzda sembol yok.", file=sys.stderr)
+        return 1
+
+    print("=" * 78)
+    print(f"GUN ICI CEKIM — {args.interval}")
+    print("=" * 78)
+    print(f"  {len(semboller)} sembol (havuz), istekler arasi "
+          f"{args.bekleme}s bekleme")
+
+    def ilerleme(i, ok):
+        print(f"      {i}/{len(semboller)} denendi, {ok} basarili", flush=True)
+
+    sonuc = idy.havuz_cek(semboller, args.interval, args.period,
+                          bekleme=args.bekleme, ilerleme=ilerleme)
+    print()
+    print(f"  durum   : {sonuc['durum']}")
+    print(f"  cekilen : {sonuc['cekilen']}")
+    print(f"  hatali  : {sonuc['hatali']}")
+    if sonuc["kalan"]:
+        print(f"  kalan   : {sonuc['kalan']}  (hiz siniri, sonra devam et)")
+    if sonuc["bundles"]:
+        ilk = next(iter(sonuc["bundles"].values()))
+        o = idy.olcum(ilk)
+        print(f"  ornek   : {o['bar']} bar, {o['gun']} gun, "
+              f"{o['ilk']} -> {o['son']}")
+    return 0 if sonuc["durum"] == "tamam" else 2
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Cok faktorlu hisse yatirim skorlama sistemi",
@@ -2433,6 +2515,21 @@ def main() -> int:
     hp.add_argument("--cache-days", type=int, default=30)
     hp.add_argument("--limit", type=int, default=None)
 
+    ip = sub.add_parser("intraday", aliases=["gunici"],
+                        help="gun ici veri: saglayici sinirlarini olc, "
+                             "havuzu cek")
+    ip.add_argument("intraday_action", nargs="?", default="kapsam",
+                    choices=["kapsam", "cek"],
+                    help="kapsam: hangi aralikta ne kadar gecmis var - "
+                         "cek: havuzun gun ici barlarini indir")
+    ip.add_argument("--symbol", default="SPY", help="kapsam olcumu sembolu")
+    ip.add_argument("--interval", default="1h")
+    ip.add_argument("--period", default=None)
+    ip.add_argument("--havuz", default=None, help="yalnizca bu havuz")
+    ip.add_argument("--bekleme", type=float, default=1.2,
+                    help="istekler arasi saniye (hiz siniri icin)")
+    ip.add_argument("--no-cache", action="store_true")
+
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)
     cp.add_argument("--invalid-only", action="store_true",
@@ -2472,6 +2569,8 @@ def main() -> int:
         return cmd_watch(args)
     if args.cmd == "learn":
         return cmd_learn(args)
+    if args.cmd in ("intraday", "gunici"):
+        return cmd_intraday(args)
     if args.cmd in ("havuz", "pool"):
         return cmd_havuz(args)
     if args.cmd in ("kisa", "short"):
