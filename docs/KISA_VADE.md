@@ -271,6 +271,11 @@ hiçbir kurulum, "rastgele bir gün" olmaktan ayırt edilemiyor.
 Üstteki iki sıra **ortalamaya dönüş** kurulumu: aşırı satım ve geri çekilme.
 Alttaki sıralar **kırılım ve trend** kurulumları. Ayrım temiz.
 
+(Tablo 05.09'da yön düzeltmesinden sonra yenilendi: kısa taraf
+kurulumlarında kazanç artık "endeksin **altında** kaldı" demek.
+`dagitim_gunu` +0.007'den −0.008'e, `yutan_ayi` −0.003'ten +0.003'e döndü.
+Uzun taraf satırları değişmedi.)
+
 Ve bu, uzun vade tarafındaki bulguyla **aynı yöne bakıyor**: orada da trend
 ailesinin tamamı ölçüm penceresinin ikinci yarısında gücünü kaybediyordu
 (bkz. [OGRENME.md](OGRENME.md), zaman/rejim kırılımı). İki bağımsız ölçüm,
