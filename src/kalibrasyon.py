@@ -612,6 +612,16 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             t = kv.tespit(df)
             oz = kv.ozellikler(df)
             ks = kv.kosullar(df)
+            # The full indicator sweep goes in as well, prefixed so it can't
+            # collide with the bucket columns above. Those stay as they are
+            # because the calibration splits on them and changing them would
+            # silently move every bucket.
+            try:
+                from . import gosterge_seti as gsx
+
+                genis = gsx.olustur(df).add_prefix("g_")
+            except Exception:
+                genis = None
             gunler = _gunluk_indeks(df.index)
             hiza = gunler if gun_bazli else _zaman_indeks(df.index)
 
@@ -641,6 +651,9 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 alt["guc"] = t[(kid, "guc")].to_numpy()[var]
                 for sut in oz.columns:
                     alt[sut] = oz[sut].to_numpy()[var]
+                if genis is not None:
+                    for sut in genis.columns:
+                        alt[sut] = genis[sut].to_numpy()[var]
                 for sut in ks.columns:
                     alt[sut] = ks[sut].to_numpy()[var]
                 for ufuk, g in etiketler.items():
