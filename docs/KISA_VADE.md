@@ -569,6 +569,105 @@ bakması gerektiğini söylüyor: kurulumlar ve özellikler, veri miktarı deği
 
 ---
 
+## Grafiğin şeklini modele vermek (06.09.2026)
+
+Skaler özellikler sinyal anını tarif ediyor: ATR%, RSI, hacim oranı, MA
+uzaklığı. "Şu an neredeyiz" diyorlar, **"buraya nasıl geldik"** demiyorlar.
+Oysa grafik okumanın iddiası tam da o yol.
+
+`src/dizi.py` her sinyale önceki **24 barı** ekliyor, yedi ölçekten bağımsız
+kanalla: log getiri, gövde/fitil oranları, barın menzili ve hacmi hissenin
+kendi 50 barlık medyanına göre, kapanışın son 20 bardaki konumu. Küçük bir 1-B
+evrişim pencereyi okuyup çıktısını skaler özelliklere ekliyor.
+
+Pencere sinyal barında **bitiyor**; etiket ondan sonra başlıyor. Tam penceresi
+olmayan satırlar sıfırla doldurulmuyor, atılıyor.
+
+Bunun için panele tam zaman damgası eklemek gerekti — saatlik panelde yalnızca
+tarih vardı ve aynı günün iki sinyali ayırt edilemiyordu.
+
+### İlk deneme: çok daha kötü
+
+| Ufuk | Brier dizi | Brier kova | AUC dizi | t |
+|---:|---:|---:|---:|---:|
+| 3b | 0.26846 | 0.24950 | 0.507 | −17.79 |
+| 7b | 0.28671 | 0.24922 | 0.498 | −21.56 |
+| 21b | 0.30942 | 0.24805 | 0.502 | −23.27 |
+
+Güvenilirlik eğrisi sebebi söylüyordu (21 bar):
+
+```
+tahmin :   6   18   28   36   43   49   55   64   75   91
+gercek :  43   45   45   47   47   47   47   46   45   44
+```
+
+Satır başına 168 ek girdi verilince model eğitim penceresindeki şekilleri
+ezberledi ve ezberini kesinlik olarak dışarı verdi. AUC baştan sona 0.50:
+**muazzam özgüven, sıfır ayırt etme.**
+
+### Eksik olan iki şey
+
+**Erken durdurma yoktu.** Eğitim sabit sayıda devir koşuyordu. Artık eğitim
+penceresinin son %15'i doğrulama olarak ayrılıyor — *zamana göre*, rastgele
+değil. Rastgele bölmek sızıntı olurdu: aynı gün iki tarafa da düşer.
+
+**Çıktı kalibrasyonu yoktu.** Aynı doğrulama diliminde tek parametreli bir
+Platt ölçeklemesi, tahminleri verinin desteklediği aralığa çekiyor.
+
+Sentetik doğrulama: 0.02–0.92 aralığındaki uydurma güven 0.456–0.489'a iniyor,
+Brier 0.314 → 0.249 (sabit taban 0.2494). Gerçek sinyal olan veride ise
+AUC 0.746 → 0.746 korunuyor. **Uydurma güveni siliyor, sinyal icat etmiyor.**
+
+### Düzeltmelerden sonra
+
+| Ufuk | Skaler | Dizi | Kova | Sabit | AUC-sk | AUC-dizi | AUC-kova | t-dizi |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 3b | 0.24969 | 0.24968 | **0.24950** | 0.24970 | 0.501 | 0.505 | **0.512** | −1.86 |
+| 7b | 0.24948 | 0.24929 | **0.24922** | 0.24939 | 0.495 | 0.503 | **0.511** | +0.09 |
+| 21b | 0.24878 | 0.24891 | **0.24805** | 0.24841 | 0.491 | 0.491 | **0.512** | −1.86 |
+
+Dizi modeli 0.309'dan 0.249'a geldi — felaket tamamen düzeldi. Ama **skalerle
+aynı yere** geldi: fark ±0.0002. Grafiğin şekli hiçbir şey katmadı.
+
+Güvenilirlik artık dürüst: tahminler %41–50, gerçekleşen %44–48. Model
+"bilmiyorum" diyor, ve bu doğru cevap.
+
+7 barlık ufukta dizi modeli t = +0.09 ile kovayla **başa baş**. Hiçbir varyant
+kovayı geçmedi.
+
+### En yüksek AUC hâlâ kovada
+
+0.511–0.512. Kova aslında sadece "hangi kurulum + hangi koşul" demek. Yani var
+olan minicik sıralama bilgisi **kurulum kimliğinden** geliyor; ne skaler ne
+dizi modeli bunun üstüne bir şey koyabiliyor.
+
+### Ölçümlerin oku hep aynı yöne bakıyor
+
+| Ölçüm | Etkin n | Kenar / AUC |
+|---|---:|---|
+| Günlük kova (rsi2) | 40 | edge +0.030 |
+| Saatlik kova (rsi2) | 700 | edge +0.002 |
+| Skaler model | — | AUC 0.50 |
+| Dizi model | — | AUC 0.50 |
+
+Ölçüm her keskinleştiğinde ve model her zenginleştiğinde cevap sıfıra
+yaklaştı. Gerçek bir kenar olsaydı tersi olurdu.
+
+### Nereye bakılmalı — dürüst liste
+
+1. **Etiket değişebilir.** Şu anki soru "N bar sonra endeksi geçti mi".
+   Alternatif: "önce +%X mi geldi yoksa −%Y mi" (üç bariyer). Bu *farklı bir
+   soru* ve bu kısıtlar içinde en somut sonraki adım.
+2. **Kurulumlar fazla bilinen kurulumlar.** On ikisi de yayımlanmış, yaygın
+   kalıplar. Likit ABD orta ölçeklilerinde işleyen bir kenar taşısalardı
+   şaşırtıcı olurdu.
+3. **Evren bilerek homojen.** Kenar daha ince ya da daha oynak isimlerde
+   olabilir — ama orada maliyet ısırır.
+4. **Haberler dışarıda.** Bilinçli tercih; ulaşılabilecek tavanı sınırlıyor ve
+   bu ölçüm "grafik yetmiyor" ile "haber eksik" arasını ayıramaz.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
