@@ -209,7 +209,11 @@ def onerilen_aralik(kapsam: dict | None = None) -> dict:
     olabilir ama 7 gunden geliyorsa bagimsiz gozlem sayisi 7'dir; ustune
     ileri getiri ortusmesi de binince olculecek bir sey kalmaz.
     """
-    k = kapsam or kapsam_yukle()
+    # `kapsam is None` ile bos sozluk AYNI SEY DEGIL. `kapsam or ...`
+    # yazilirsa, cagiran taraf bilerek bos bir kapsam gecse bile fonksiyon
+    # gidip diskteki dosyayi okur -- yani "veri yok" durumu test edilemez
+    # hale gelir. (Kapsam dosyasi olusana kadar fark etmiyordu.)
+    k = kapsam_yukle() if kapsam is None else kapsam
     if not k or not k.get("araliklar"):
         return {"ok": False,
                 "reason": "kapsam olcumu yok — once: python run.py intraday kapsam"}
