@@ -259,6 +259,46 @@ try:
     check("endekssiz olcum acikca isaretleniyor",
           "ENDEKSSIZ" in kal_ham["kazanc_tanimi"], kal_ham["kazanc_tanimi"])
 
+    print()
+    print("=" * 72)
+    print("9) META-ETIKET PANELI")
+    print("=" * 72)
+
+    with tempfile.TemporaryDirectory() as td:
+        yol = Path(td) / "panel.csv"
+        oz = kb.panel(evren(sonrasi=0.006, seed0=1), bench, ufuklar=(3, 5),
+                      min_bar=220, yol=yol)
+        check("panel uretildi", oz.get("ok"), str(oz.get("reason")))
+        if oz.get("ok"):
+            t = pd.read_csv(yol)
+            print(f"        {oz['satir']} satir, {len(oz['ozellikler'])} ozellik")
+            check("satir sayisi uyuyor", len(t) == oz["satir"])
+            check("kimlik sutunlari var",
+                  {"ticker", "tarih", "kurulum", "yon"} <= set(t.columns))
+            check("etiket sutunlari var",
+                  {"fazla_3g", "kazanc_3g", "fazla_5g", "kazanc_5g"}
+                  <= set(t.columns))
+            check("sayisal ozellikler var",
+                  {"atr_pct", "rsi14", "ma200_uzaklik", "hacim_orani"}
+                  <= set(t.columns))
+            check("kova sutunlari da tasiniyor",
+                  {"oynaklik", "likidite", "trend_konumu"} <= set(t.columns))
+            check("kazanc etiketi 0/1 (veya bos)",
+                  set(t["kazanc_5g"].dropna().unique()) <= {0.0, 1.0},
+                  str(set(t["kazanc_5g"].dropna().unique())))
+            check("kazanc, fazla getirinin isaretiyle tutarli",
+                  bool(((t["fazla_5g"] > 0).astype(float)
+                        == t["kazanc_5g"]).where(t["fazla_5g"].notna())
+                       .dropna().all()))
+            check("ekilmis kenar panelde de gorunuyor",
+                  float(t.loc[t["kurulum"] == TEST_ID, "kazanc_5g"].mean()) > 0.8,
+                  f"%{100*float(t.loc[t['kurulum'] == TEST_ID, 'kazanc_5g'].mean()):.0f}")
+            check("son barlarin etiketi BOS (ufuk dolmadi)",
+                  bool(t["kazanc_5g"].isna().any()))
+            check("ozellik listesinde etiket yok",
+                  not any(c.startswith(("fazla_", "kazanc_"))
+                          for c in oz["ozellikler"]))
+
 finally:
     kv.KAYIT.pop(TEST_ID, None)
 

@@ -89,6 +89,10 @@ class Kurulum:
 
 KAYIT: dict[str, Kurulum] = {}
 
+# Dedektor calisirken olusan hatalar burada birikir. Bos olmasi beklenir;
+# dolu olmasi bir dedektorun olu oldugu anlamina gelir (bkz. tespit()).
+HATALAR: dict[str, str] = {}
+
 
 def kaydet(k: Kurulum) -> Kurulum:
     if k.id in KAYIT:
@@ -211,8 +215,10 @@ def _bollinger_sikismasi(df: pd.DataFrame) -> tuple[pd.Series, pd.Series]:
     sartiyla long tarafa aliniyor.
     """
     c = df["Close"]
-    ust, orta, alt = ind.bollinger(c, 20, 2.0)
-    genislik = (ust - alt) / orta
+    # bollinger() BES deger dondurur; ucunu almak ValueError firlatir ve
+    # tespit() bunu yutuyordu -- dedektor sessizce hicbir sey uretmiyordu.
+    # Genislik zaten hesaplanmis halde geliyor, yeniden turetmeye gerek yok.
+    genislik = ind.bollinger(c, 20, 2.0)[4]
     esik = genislik.rolling(120).quantile(0.10)
     trend = c > ind.sma(c, 200)
 
@@ -340,26 +346,52 @@ kaydet(Kurulum("dagitim_gunu", "Dagitim gunu", "short", _dagitim_gunu,
 # =============================================================================
 #  Kosullar — kalibrasyonun "hangi durumda" tarafi
 # =============================================================================
+def ozellikler(df: pd.DataFrame) -> pd.DataFrame:
+    """Kurulumun olustugu ortamin SAYISAL tarifi.
+
+    Iki tuketicisi var ve ikisi ayni sayilari gormeli:
+      - kosullar() bunlari kovalara boler (kalibrasyonun kirilim ekseni)
+      - meta-etiket paneli bunlari ham haliyle disa aktarir (ileride
+        egitilecek model kendi esiklerini ogrensin diye)
+
+    Ayri ayri hesaplansalardi biri degistiginde digeri sessizce sapardi ve
+    modelin ogrendigi ortam, kalibrasyonun olctugu ortam olmaktan cikardi.
+
+    Hepsi yalnizca GERIYE bakar.
+    """
+    o, h, l, c, v = (df["Open"], df["High"], df["Low"], df["Close"],
+                     df["Volume"])
+    ma200 = ind.sma(c, 200)
+
+    out = pd.DataFrame(index=df.index)
+    out["atr_pct"] = ind.atr(h, l, c, 14) / c
+    out["bb_genislik"] = ind.bollinger(c, 20, 2.0)[4]
+    out["dolar_hacim"] = _dolar_hacim(c, v, 20)
+    out["ma200_uzaklik"] = c / ma200 - 1.0
+    out["ma50_uzaklik"] = c / ind.sma(c, 50) - 1.0
+    out["rsi14"] = ind.rsi(c, 14)
+    out["hacim_orani"] = v / v.rolling(20).median()
+    out["getiri_5g"] = c / c.shift(5) - 1.0
+    out["getiri_20g"] = c / c.shift(20) - 1.0
+    out["govde_orani"] = _govde(o, c) / _menzil(h, l)
+    return out
+
+
 def kosullar(df: pd.DataFrame) -> pd.DataFrame:
     """Her bar icin, kurulumun olustugu ORTAMI tarif eden kategoriler.
 
     Kalibrasyon bunlara gore kirilim yapar: ayni kurulum sakin piyasada
     baska, oynak piyasada baska calisiyor olabilir. Sayisal degerler degil
     KOVA adlari tutulur; kova sayisi az olsun ki her kovada olcum yapacak
-    kadar gozlem birikSin.
+    kadar gozlem biriksin.
     """
-    c, h, l, v = df["Close"], df["High"], df["Low"], df["Volume"]
-    atr_pct = ind.atr(h, l, c, 14) / c
-    dv = _dolar_hacim(c, v, 20)
-    ma200 = ind.sma(c, 200)
-    uzaklik = (c / ma200 - 1.0)
-
+    oz = ozellikler(df)
     out = pd.DataFrame(index=df.index)
-    out["oynaklik"] = pd.cut(atr_pct, [-np.inf, 0.02, 0.045, np.inf],
+    out["oynaklik"] = pd.cut(oz["atr_pct"], [-np.inf, 0.02, 0.045, np.inf],
                              labels=["sakin", "orta", "oynak"]).astype(object)
-    out["likidite"] = pd.cut(dv, [-np.inf, 2e6, 2e7, np.inf],
+    out["likidite"] = pd.cut(oz["dolar_hacim"], [-np.inf, 2e6, 2e7, np.inf],
                              labels=["ince", "orta", "kalin"]).astype(object)
-    out["trend_konumu"] = pd.cut(uzaklik, [-np.inf, 0.0, 0.15, np.inf],
+    out["trend_konumu"] = pd.cut(oz["ma200_uzaklik"], [-np.inf, 0.0, 0.15, np.inf],
                                  labels=["ma200_alti", "yakin", "uzak"]).astype(object)
     return out
 
@@ -383,7 +415,13 @@ def tespit(df: pd.DataFrame, kurulumlar: "list[str] | None" = None
         k = KAYIT[kid]
         try:
             var, guc = k.dedektor(df)
-        except Exception:
+        except Exception as exc:
+            # SESSIZ YUTMA YOK. Eskiden burada hata yutuluyordu ve bozuk bir
+            # dedektor "hicbir sinyal uretmeyen dedektor"den ayirt edilemiyordu
+            # -- bollinger_sikismasi tam bu sekilde aylarca olu kalabilirdi.
+            # Tarama devam etmeli (tek hisse tum evreni dusurmesin) ama hata
+            # sayilmali ve gorulmeli.
+            HATALAR[kid] = f"{type(exc).__name__}: {exc}"
             var = pd.Series(False, index=df.index)
             guc = pd.Series(0.0, index=df.index)
         parcalar[(kid, "var")] = var.reindex(df.index).fillna(False).astype(bool)

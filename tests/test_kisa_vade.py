@@ -328,6 +328,96 @@ check("tara() yalnizca gecerli hisseleri isliyor",
 check("tara() bos girdide bos tablo doner", len(kv.tara({})) == 0)
 
 print()
+print("=" * 72)
+print("8) HER DEDEKTOR GERCEKTEN CALISIYOR MU")
+print("=" * 72)
+
+# 05.09.2026: bollinger_sikismasi, ind.bollinger()'in BES deger dondurmesine
+# ragmen uc degere cozumleniyordu. tespit() istisnayi yutuyordu, dedektor
+# aylarca olu kalabilirdi ve "hic sinyal uretmeyen dedektor" ile "bozuk
+# dedektor" ayirt edilemiyordu. Artik hatalar KAYIT altinda birikiyor.
+def gercekci(n: int = 900, seed: int = 21) -> pd.DataFrame:
+    """Hacim dalgalanmasi ve bosluk iceren seri.
+
+    taban() duz hacimli ve bosluksuz; hacme veya bosluga bakan dedektorler
+    orada YAPISAL olarak tetiklenemez. Onlari "olu" saymak dedektoru degil
+    fikstur'u olcmek olurdu.
+    """
+    r = np.random.default_rng(seed)
+    getiri = r.normal(0.0015, 0.011, n)
+    bosluk = (r.random(n) < 0.05) * r.normal(0, 0.045, n)   # ara sira bosluk
+    kapanis = 40.0 * np.exp(np.cumsum(getiri))
+    # ACILIS, ONCEKI kapanistan tureMELI. Bugunun kapanisindan turetilirse
+    # bosluksuz gunlerde Open == Close olur, hicbir bar "yukselis mumu"
+    # sayilmaz ve yutan mum dedektorleri yapisal olarak hic tetiklenemez.
+    onceki = np.concatenate([[40.0], kapanis[:-1]])
+    acilis = onceki * (1 - bosluk)
+    yuksek = np.maximum(acilis, kapanis) * (1 + np.abs(r.normal(0, 0.006, n)))
+    dusuk = np.minimum(acilis, kapanis) * (1 - np.abs(r.normal(0, 0.006, n)))
+    # Hacim: log-normal + ara sira patlama ve kuraklik
+    hacim = np.exp(r.normal(13.8, 0.5, n))
+    hacim *= np.where(r.random(n) < 0.06, r.uniform(2.5, 5.0, n), 1.0)
+    hacim *= np.where(r.random(n) < 0.10, r.uniform(0.25, 0.5, n), 1.0)
+    return pd.DataFrame({"Open": acilis, "High": yuksek, "Low": dusuk,
+                         "Close": kapanis, "Volume": hacim},
+                        index=pd.bdate_range("2022-01-03", periods=n))
+
+
+kv.HATALAR.clear()
+uzun = gercekci()
+tt = kv.tespit(uzun)
+check("hicbir dedektor hata vermiyor", not kv.HATALAR, str(kv.HATALAR))
+
+sayim = {kid: int(tt[(kid, "var")].sum()) for kid in kv.KAYIT}
+olu = [kid for kid, n_ in sayim.items() if n_ == 0]
+check("hicbir dedektor gercekci seride TAMAMEN olu degil", not olu, str(olu))
+print("        tetik sayilari: "
+      + ", ".join(f"{k}={v}" for k, v in sorted(sayim.items(),
+                                                key=lambda x: -x[1])))
+
+# Bozuk bir dedektor SESSIZ kalmamali
+kv.HATALAR.clear()
+
+
+def _bozuk(df):
+    raise RuntimeError("bilerek bozuk")
+
+
+kv.KAYIT["_bozuk"] = kv.Kurulum("_bozuk", "Bozuk", "long", _bozuk, "test" * 10)
+try:
+    kv.tespit(uzun)
+    check("bozuk dedektor hata kaydina dusuyor", "_bozuk" in kv.HATALAR,
+          str(kv.HATALAR))
+    check("bozuk dedektor taramayi durdurmuyor",
+          bool(kv.tespit(uzun)[("cekic", "var")].sum() >= 0))
+finally:
+    kv.KAYIT.pop("_bozuk", None)
+    kv.HATALAR.clear()
+
+print()
+print("=" * 72)
+print("9) SAYISAL OZELLIKLER")
+print("=" * 72)
+
+oz = kv.ozellikler(taban(300, seed=22))
+bekle = {"atr_pct", "bb_genislik", "dolar_hacim", "ma200_uzaklik",
+         "ma50_uzaklik", "rsi14", "hacim_orani", "getiri_5g", "getiri_20g",
+         "govde_orani"}
+check("beklenen ozellik sutunlari var", bekle <= set(oz.columns),
+      str(sorted(set(oz.columns))))
+check("son barda hepsi dolu",
+      all(pd.notna(oz[c].iloc[-1]) for c in oz.columns),
+      str([c for c in oz.columns if pd.isna(oz[c].iloc[-1])]))
+check("RSI 0-100 araliginda",
+      bool(oz["rsi14"].dropna().between(0, 100).all()))
+check("ATR yuzdesi pozitif", bool((oz["atr_pct"].dropna() > 0).all()))
+
+# kosullar(), ozellikler() uzerine oturmali -- iki ayri hesap olmamali
+ks2 = kv.kosullar(taban(300, seed=22))
+check("kosullar ile ozellikler ayni indekste",
+      list(ks2.index) == list(oz.index))
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

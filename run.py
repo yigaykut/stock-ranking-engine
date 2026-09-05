@@ -1974,6 +1974,23 @@ def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
     return out
 
 
+def _kisa_bench(args: argparse.Namespace):
+    """Karsilastirma endeksi. Yoksa acikca uyarir.
+
+    Endekssiz olcum, yukselen piyasada her kurulumu iyi gosterir; sessizce
+    dusulmesi gereken bir seye degil, gorulmesi gereken bir eksige benziyor.
+    """
+    try:
+        bd = yahoo.fetch_benchmark(args.benchmark, args.period, use_cache=True)
+        if bd is not None and "Close" in bd:
+            return bd["Close"]
+    except Exception:
+        pass
+    print("  UYARI: endeks gecmisi yok, olcum ENDEKSSIZ yapilacak "
+          "(yukselen piyasada her kurulum iyi gorunur)", file=sys.stderr)
+    return None
+
+
 def cmd_kisa(args: argparse.Namespace) -> int:
     """Kisa vadeli kurulum taramasi ve kalibrasyonu.
 
@@ -1999,16 +2016,7 @@ def cmd_kisa(args: argparse.Namespace) -> int:
             return 1
         print(f"  {len(bundles)} hisse", flush=True)
 
-        bench = None
-        try:
-            bd = yahoo.fetch_benchmark(args.benchmark, args.period, use_cache=True)
-            if bd is not None and "Close" in bd:
-                bench = bd["Close"]
-        except Exception:
-            bench = None
-        if bench is None:
-            print("  UYARI: endeks gecmisi yok, olcum ENDEKSSIZ yapilacak "
-                  "(yukselen piyasada her kurulum iyi gorunur)", file=sys.stderr)
+        bench = _kisa_bench(args)
 
         def ilerleme(i, islenen):
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
@@ -2019,6 +2027,44 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         _kalibrasyon_tablosu(payload)
         print()
         print(f"Kaydedildi: {yol}")
+        return 0
+
+    if eylem == "panel":
+        print("=" * 74)
+        print("KISA VADE META-ETIKET PANELI")
+        print("=" * 74)
+        bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        if not bundles:
+            print("HATA: onbellekte gunluk bar yok.", file=sys.stderr)
+            return 1
+        print(f"  {len(bundles)} hisse", flush=True)
+        bench = _kisa_bench(args)
+
+        def ilerleme(i, islenen):
+            print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
+
+        ozet = kb.panel(bundles, bench, ufuklar=kv.UFUKLAR,
+                        min_bar=kv.MIN_BAR, ilerleme=ilerleme)
+        if not ozet.get("ok"):
+            print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
+            return 1
+        print()
+        print(f"  satir      : {ozet['satir']:,}")
+        print(f"  hisse      : {ozet['hisse']}")
+        print(f"  kurulum    : {ozet['kurulum']}")
+        print(f"  tarih      : {ozet['tarih_araligi'][0]} -> "
+              f"{ozet['tarih_araligi'][1]}")
+        print(f"  ozellik    : {len(ozet['ozellikler'])} sutun")
+        print(f"  etiket     : {', '.join(ozet['etiketler'])}")
+        print(f"  etiketli   : "
+              + ", ".join(f"{k} %{100*v:.0f}"
+                          for k, v in ozet["etiketli_oran"].items()))
+        print()
+        print("  Bu tablo bir MODEL EGITIM KUMESIDIR, karar tablosu degil.")
+        print("  Ozellikler sinyal gunune kadar, etiketler sinyal gununden")
+        print("  SONRASINI olcer; ikisi hicbir yerde karismaz.")
+        print()
+        print(f"  Kaydedildi: {ozet['yol']}")
         return 0
 
     # --- bugunku tarama
@@ -2301,9 +2347,10 @@ def main() -> int:
                           help="kisa vadeli kurulum taramasi ve kalibrasyonu "
                                "(uzun vadeli siralamadan AYRI)")
     kv_p.add_argument("kisa_action", nargs="?", default="tara",
-                      choices=["tara", "kalibre"],
+                      choices=["tara", "kalibre", "panel"],
                       help="tara: bugunku kurulumlar - kalibre: gecmisten "
-                           "guven degerlerini olc")
+                           "guven degerlerini olc - panel: ileride egitilecek "
+                           "model icin satir satir ozellik+sonuc tablosu")
     kv_p.add_argument("--period", default="2y", help="onbellek gecmis araligi")
     kv_p.add_argument("--cache-days", type=int, default=30,
                       help="onbellekte bu kadar gunden eski kayit kullanilmaz")

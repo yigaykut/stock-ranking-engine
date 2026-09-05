@@ -126,6 +126,31 @@ def _kosul_dilimleri(ks: pd.DataFrame) -> "list[tuple[str, pd.Series]]":
     return out
 
 
+def _gunluk_indeks(idx) -> "pd.DatetimeIndex":
+    """Dilimli/dilimsiz karisik indeksi, dilimsiz gune indirger.
+
+    Yahoo gecmisi America/New_York dilimli gelir, endeks serisi ayri
+    kurulur. Ikisi ayni forma sokulmazsa reindex sessizce hepsini NaN
+    doldurur ve butun etiketler kaybolur.
+    """
+    d = pd.DatetimeIndex(idx)
+    try:
+        d = d.tz_localize(None) if d.tz is None else d.tz_convert(None)
+    except (TypeError, AttributeError):
+        pass
+    return d.normalize()
+
+
+def _bench_hazirla(bench_close) -> "pd.Series | None":
+    if bench_close is None or not len(bench_close):
+        return None
+    b = pd.to_numeric(bench_close, errors="coerce").dropna()
+    if b.empty:
+        return None
+    out = pd.Series(b.to_numpy(), index=_gunluk_indeks(b.index))
+    return out[~out.index.duplicated(keep="last")].sort_index()
+
+
 # =============================================================================
 #  Toplama
 # =============================================================================
@@ -240,16 +265,7 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
     from . import kisa_vade as kv
 
     top = Toplayici(ufuklar)
-    bench = None
-    if bench_close is not None and len(bench_close):
-        b = pd.to_numeric(bench_close, errors="coerce").dropna()
-        idx = pd.DatetimeIndex(b.index)
-        try:
-            idx = idx.tz_localize(None) if idx.tz is None else idx.tz_convert(None)
-        except (TypeError, AttributeError):
-            pass
-        bench = pd.Series(b.to_numpy(), index=idx.normalize())
-        bench = bench[~bench.index.duplicated(keep="last")].sort_index()
+    bench = _bench_hazirla(bench_close)
 
     islenen = hatali = 0
     for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
@@ -264,12 +280,7 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
             ks = kv.kosullar(df)
             dilimler = _kosul_dilimleri(ks)
 
-            gunler = pd.DatetimeIndex(df.index)
-            try:
-                gunler = (gunler.tz_localize(None) if gunler.tz is None
-                          else gunler.tz_convert(None)).normalize()
-            except (TypeError, AttributeError):
-                pass
+            gunler = _gunluk_indeks(df.index)
 
             for ufuk in ufuklar:
                 getiri = ileri_getiri(df["Close"], ufuk)
@@ -430,3 +441,117 @@ def _kova_adi(k: dict) -> str:
     if k["kosul"] == "*":
         return f"{k['kurulum']} / {k['ufuk']}g / genel"
     return f"{k['kurulum']} / {k['ufuk']}g / {k['kosul']}={k['deger']}"
+
+
+# =============================================================================
+#  Meta-etiket paneli — ileride egitilecek model icin
+# =============================================================================
+PANEL = DATA / "kisa_vade_panel.csv"
+
+
+def panel(bundles: dict, bench_close: "pd.Series | None" = None,
+          ufuklar: "tuple[int, ...]" = (3, 5, 10), min_bar: int = 220,
+          yol: Path | None = None,
+          ilerleme: "callable | None" = None) -> dict:
+    """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
+
+    NEDEN AYRI BIR CIKTI
+    --------------------
+    kur() kova bazinda SAYIM uretir: "bu kurulum, oynak piyasada, 5 gunde
+    %57". Bu, insanin okuyup karar verebilecegi bir ozet -- ve kovalar
+    bilerek kaba tutuldu, cunku ince kirilim olculemiyor.
+
+    Bir model ise kovaya ihtiyac duymaz; ham sayilardan kendi esiklerini
+    ogrenir. Bu dosya ona o ham hali verir. Iki cikti ayni olcum
+    disiplininden gelir (ayni dedektorler, ayni ozellikler, ayni etiket) --
+    yani model, kalibrasyonun olctugunden BASKA bir dunyayi ogrenmez.
+
+    NE ISE YARAR: "kurulum olustu" ile "kurulum ise yarayacak" ayri
+    sorulardir. Ikincisini ogrenen model, literaturde meta-etiketleme diye
+    geciyor: birincil sinyal kaliptan gelir, ikincil model o sinyalin
+    tutup tutmayacagini kestirir. Bu dosya o ikinci modelin egitim kumesi.
+
+    SIZINTI: ozellikler sinyal gunune kadar (dahil) hesaplanir, etiketler
+    sinyal gununden SONRASINI olcer. Iki taraf hicbir yerde karismaz.
+
+    Doner: ozet sozluk. Tablo diske yazilir (data/ gitignore altinda).
+    """
+    from . import kisa_vade as kv
+
+    bench = _bench_hazirla(bench_close)
+    parcalar: list[pd.DataFrame] = []
+    islenen = hatali = 0
+
+    for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
+        h = (bundle or {}).get("history")
+        if h is None or len(h) < min_bar:
+            continue
+        try:
+            df = h[["Open", "High", "Low", "Close", "Volume"]].dropna()
+            if len(df) < min_bar:
+                continue
+            t = kv.tespit(df)
+            oz = kv.ozellikler(df)
+            ks = kv.kosullar(df)
+            gunler = _gunluk_indeks(df.index)
+
+            etiketler = {}
+            for ufuk in ufuklar:
+                getiri = ileri_getiri(df["Close"], ufuk)
+                if bench is not None:
+                    bser = pd.Series(bench.reindex(gunler).to_numpy(),
+                                     index=df.index)
+                    getiri = getiri - (bser.shift(-ufuk) / bser - 1.0)
+                etiketler[ufuk] = getiri
+
+            for kid in kv.KAYIT:
+                var = t[(kid, "var")].to_numpy()
+                if not var.any():
+                    continue
+                alt = pd.DataFrame(index=df.index[var])
+                alt.insert(0, "ticker", tk)
+                alt.insert(1, "tarih", gunler[var])
+                alt.insert(2, "kurulum", kid)
+                alt.insert(3, "yon", kv.KAYIT[kid].yon)
+                alt["guc"] = t[(kid, "guc")].to_numpy()[var]
+                for sut in oz.columns:
+                    alt[sut] = oz[sut].to_numpy()[var]
+                for sut in ks.columns:
+                    alt[sut] = ks[sut].to_numpy()[var]
+                for ufuk, g in etiketler.items():
+                    alt[f"fazla_{ufuk}g"] = g.to_numpy()[var]
+                    alt[f"kazanc_{ufuk}g"] = (g.to_numpy()[var] > 0).astype(float)
+                    alt.loc[pd.isna(alt[f"fazla_{ufuk}g"]), f"kazanc_{ufuk}g"] = np.nan
+                parcalar.append(alt.reset_index(drop=True))
+            islenen += 1
+        except Exception:
+            hatali += 1
+            continue
+        if ilerleme and (i + 1) % 200 == 0:
+            ilerleme(i + 1, islenen)
+
+    if not parcalar:
+        return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
+
+    tablo = pd.concat(parcalar, ignore_index=True)
+    p = yol or PANEL
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tablo.to_csv(p, index=False)
+    return {
+        "ok": True,
+        "yol": str(p),
+        "satir": int(len(tablo)),
+        "hisse": islenen,
+        "hatali": hatali,
+        "kurulum": int(tablo["kurulum"].nunique()),
+        "tarih_araligi": [str(tablo["tarih"].min())[:10],
+                          str(tablo["tarih"].max())[:10]],
+        "ozellikler": [c for c in tablo.columns
+                       if c not in ("ticker", "tarih", "kurulum", "yon")
+                       and not c.startswith(("fazla_", "kazanc_"))],
+        "etiketler": [c for c in tablo.columns
+                      if c.startswith(("fazla_", "kazanc_"))],
+        "etiketli_oran": {
+            f"{u}g": round(float(tablo[f"kazanc_{u}g"].notna().mean()), 4)
+            for u in ufuklar},
+    }
