@@ -60,9 +60,11 @@ MIN_SATIR = 2000
 KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
 
 
-def cikti_yolu(frekans: str, dizi: bool = False) -> Path:
+def cikti_yolu(frekans: str, dizi: bool = False,
+               etiket: str = "kazanc") -> Path:
     ek = "_dizi" if dizi else ""
-    return DATA / f"meta_model_{frekans}{ek}.json"
+    et = "" if etiket == "kazanc" else f"_{etiket}"
+    return DATA / f"meta_model_{frekans}{ek}{et}.json"
 
 
 # =============================================================================
@@ -83,17 +85,18 @@ def panel_yukle(frekans: str = "1d") -> pd.DataFrame | None:
 def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns
             if c not in KIMLIK
-            and not c.startswith(("fazla_", "kazanc_"))]
+            and not c.startswith(("fazla_", "kazanc_", "bariyer_"))]
 
 
-def hazirla(df: pd.DataFrame, ufuk: int) -> dict | None:
+def hazirla(df: pd.DataFrame, ufuk: int,
+            etiket_tipi: str = "kazanc") -> dict | None:
     """Bir ufuk icin X, y, tarih ve kova taban olasiligi.
 
     Kategorik sutunlar (kurulum, oynaklik, likidite, trend_konumu) one-hot
     ediliyor. Kurulum kimliginin ozellik olmasi SART: model "hangi kurulum"
     bilgisini gormeden, kurulumlar arasi farki ogrenemez.
     """
-    etiket = f"kazanc_{ufuk}g"
+    etiket = f"{etiket_tipi}_{ufuk}g"
     if etiket not in df.columns:
         return None
     alt = df[df[etiket].notna()].copy()
@@ -583,7 +586,7 @@ def _barlari_yukle(frekans: str, semboller: set) -> dict:
 
 def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              n_kat: int = 4, seed: int = 7, dizi: bool = False,
-             pencere: int = 24) -> dict:
+             pencere: int = 24, etiket: str = "kazanc") -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -609,7 +612,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     sonuc = []
     pencere_ozet = None
     for u in ufuklar:
-        veri = hazirla(df, u)
+        veri = hazirla(df, u, etiket)
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
@@ -653,6 +656,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "panel_satir": int(len(df)),
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
+        "etiket": etiket,
         "dizi": bool(dizi),
         "pencere": pencere if dizi else None,
         "pencere_ozet": pencere_ozet,
@@ -693,7 +697,8 @@ def _notlar(sonuc: list) -> list[str]:
 
 def kaydet(payload: dict, path: Path | None = None) -> Path:
     p = path or cikti_yolu(payload.get("frekans", "1d"),
-                           bool(payload.get("dizi")))
+                           bool(payload.get("dizi")),
+                           payload.get("etiket", "kazanc"))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                  encoding="utf-8")
@@ -701,8 +706,8 @@ def kaydet(payload: dict, path: Path | None = None) -> Path:
 
 
 def yukle(frekans: str = "1d", path: Path | None = None,
-          dizi: bool = False) -> dict | None:
-    p = path or cikti_yolu(frekans, dizi)
+          dizi: bool = False, etiket: str = "kazanc") -> dict | None:
+    p = path or cikti_yolu(frekans, dizi, etiket)
     if not p.exists():
         return None
     try:

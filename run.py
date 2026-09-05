@@ -2388,7 +2388,7 @@ def cmd_meta(args: argparse.Namespace) -> int:
     print()
 
     d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed,
-                    dizi=args.dizi, pencere=args.pencere)
+                    dizi=args.dizi, pencere=args.pencere, etiket=args.etiket)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2668,6 +2668,10 @@ def main() -> int:
                           "(grafigin sekli, sadece o anki degerler degil)")
     mp2.add_argument("--pencere", type=int, default=24,
                      help="--dizi ile: kac bar geriye bakilsin")
+    mp2.add_argument("--etiket", default="kazanc",
+                     choices=["kazanc", "bariyer"],
+                     help="kazanc: N bar sonra endeksi gecti mi - "
+                          "bariyer: hedefe mi once degdi stopa mi")
 
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)

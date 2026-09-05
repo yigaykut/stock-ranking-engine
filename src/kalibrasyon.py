@@ -625,6 +625,14 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             gunler = _gunluk_indeks(df.index)
             hiza = gunler if gun_bazli else _zaman_indeks(df.index)
 
+            # Second label alongside the first: did the target come before
+            # the stop. Kept as extra columns rather than replacing anything,
+            # so both questions can be measured on the same rows.
+            try:
+                bariyer = bariyer_etiketleri(df, ufuklar)
+            except Exception:
+                bariyer = {}
+
             etiketler = {}
             for ufuk in ufuklar:
                 getiri = ileri_getiri(df["Close"], ufuk)
@@ -660,6 +668,9 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     alt[f"fazla_{ufuk}g"] = g.to_numpy()[var]
                     alt[f"kazanc_{ufuk}g"] = (g.to_numpy()[var] > 0).astype(float)
                     alt.loc[pd.isna(alt[f"fazla_{ufuk}g"]), f"kazanc_{ufuk}g"] = np.nan
+                    b = bariyer.get(ufuk)
+                    if b is not None:
+                        alt[f"bariyer_{ufuk}g"] = b.to_numpy()[var]
                 parcalar.append(alt.reset_index(drop=True))
             islenen += 1
         except Exception:
@@ -692,9 +703,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         "ozellikler": [c for c in tablo.columns
                        if c not in ("ticker", "tarih", "zaman", "kurulum",
                                     "yon", "frekans")
-                       and not c.startswith(("fazla_", "kazanc_"))],
+                       and not c.startswith(("fazla_", "kazanc_", "bariyer_"))],
         "etiketler": [c for c in tablo.columns
-                      if c.startswith(("fazla_", "kazanc_"))],
+                      if c.startswith(("fazla_", "kazanc_", "bariyer_"))],
+        "bariyer_oran": {
+            f"{u}g": round(float(tablo[f"bariyer_{u}g"].notna().mean()), 4)
+            for u in ufuklar if f"bariyer_{u}g" in tablo.columns},
         "etiketli_oran": {
             f"{u}g": round(float(tablo[f"kazanc_{u}g"].notna().mean()), 4)
             for u in ufuklar},
