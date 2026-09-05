@@ -2387,7 +2387,8 @@ def cmd_meta(args: argparse.Namespace) -> int:
     print("  Soru: 'bu kurulum tutacak mi?'  Taban cizgisi: kova kalibrasyonu")
     print()
 
-    d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed)
+    d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed,
+                    dizi=args.dizi, pencere=args.pencere)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2662,6 +2663,11 @@ def main() -> int:
     mp2.add_argument("--kat", type=int, default=4,
                      help="ileri yuruyus katman sayisi")
     mp2.add_argument("--seed", type=int, default=7)
+    mp2.add_argument("--dizi", action="store_true",
+                     help="sinyal oncesi barlari da modele ver "
+                          "(grafigin sekli, sadece o anki degerler degil)")
+    mp2.add_argument("--pencere", type=int, default=24,
+                     help="--dizi ile: kac bar geriye bakilsin")
 
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)

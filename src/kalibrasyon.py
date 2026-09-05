@@ -631,8 +631,13 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 alt = pd.DataFrame(index=df.index[var])
                 alt.insert(0, "ticker", tk)
                 alt.insert(1, "tarih", gunler[var])
-                alt.insert(2, "kurulum", kid)
-                alt.insert(3, "yon", kv.KAYIT[kid].yon)
+                # Keep the exact bar timestamp as well. On hourly data the
+                # date alone collapses several signals from the same day into
+                # rows you can't tell apart, so there's no way back to the
+                # bars they came from.
+                alt.insert(2, "zaman", _zaman_indeks(df.index)[var])
+                alt.insert(3, "kurulum", kid)
+                alt.insert(4, "yon", kv.KAYIT[kid].yon)
                 alt["guc"] = t[(kid, "guc")].to_numpy()[var]
                 for sut in oz.columns:
                     alt[sut] = oz[sut].to_numpy()[var]
@@ -672,8 +677,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         "tarih_araligi": [str(tablo["tarih"].min())[:10],
                           str(tablo["tarih"].max())[:10]],
         "ozellikler": [c for c in tablo.columns
-                       if c not in ("ticker", "tarih", "kurulum", "yon",
-                                    "frekans")
+                       if c not in ("ticker", "tarih", "zaman", "kurulum",
+                                    "yon", "frekans")
                        and not c.startswith(("fazla_", "kazanc_"))],
         "etiketler": [c for c in tablo.columns
                       if c.startswith(("fazla_", "kazanc_"))],

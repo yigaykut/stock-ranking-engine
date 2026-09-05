@@ -60,8 +60,9 @@ MIN_SATIR = 2000
 KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
 
 
-def cikti_yolu(frekans: str) -> Path:
-    return DATA / f"meta_model_{frekans}.json"
+def cikti_yolu(frekans: str, dizi: bool = False) -> Path:
+    ek = "_dizi" if dizi else ""
+    return DATA / f"meta_model_{frekans}{ek}.json"
 
 
 # =============================================================================
@@ -114,10 +115,14 @@ def hazirla(df: pd.DataFrame, ufuk: int) -> dict | None:
             parcalar.append(pd.get_dummies(alt[c].astype(str), prefix=c[:4]))
     XX = pd.concat(parcalar, axis=1).astype(np.float32)
 
+    zaman = (pd.DatetimeIndex(pd.to_datetime(alt["zaman"], errors="coerce"))
+             if "zaman" in alt.columns else None)
     return {
         "X": XX.to_numpy(dtype=np.float32),
         "y": alt[etiket].to_numpy(dtype=np.float32),
         "tarih": pd.DatetimeIndex(alt["tarih"]).normalize(),
+        "zaman": zaman,
+        "ticker": alt["ticker"].to_numpy(),
         "kurulum": alt["kurulum"].to_numpy(),
         "kosullar": {c: alt[c].astype(str).to_numpy() for c in kategorik},
         "ozellik_adlari": list(XX.columns),
@@ -223,12 +228,71 @@ def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
 # =============================================================================
 #  Model
 # =============================================================================
-def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
-          gizli: int = 48, lr: float = 2e-3) -> "object | None":
-    """Kucuk MLP + lojistik cikti. Girdi tablo, hedef 0/1.
+def _dogrulama_bol(tarih, pay: float = 0.15):
+    """Split training rows by time: the last slice is held out.
 
-    Kucuk tutuluyor: 14 ozellik ve gurultulu bir hedef icin buyuk bir ag,
-    ogrenmekten cok ezberler. Karsilastirilan taban cizgisi de zaten basit.
+    Has to be by time, not at random. A random split leaks — the same day
+    lands on both sides, and the model gets scored on days it already saw.
+    """
+    import numpy as _np
+
+    n = len(tarih)
+    if n < 500:
+        return _np.ones(n, dtype=bool), _np.zeros(n, dtype=bool)
+    gunler = _np.array(sorted(set(tarih)))
+    kes = gunler[max(1, int(len(gunler) * (1 - pay)))]
+    val = _np.array([t >= kes for t in tarih])
+    if val.sum() < 100 or (~val).sum() < 400:
+        return _np.ones(n, dtype=bool), _np.zeros(n, dtype=bool)
+    return ~val, val
+
+
+def _platt(p: "np.ndarray", y: "np.ndarray") -> tuple:
+    """One-dimensional logistic fit that rescales predictions.
+
+    The sequence model was spreading its predictions from 6% to 91% while the
+    real rate never left 43-47%. That spread is fabricated, and Brier punishes
+    it hard. Platt pulls the scale back to whatever the held-out slice
+    supports. It can't invent ranking ability, and it isn't meant to — if AUC
+    is 0.50 it stays 0.50, only the numbers stop lying about their own
+    certainty.
+    """
+    eps = 1e-6
+    z = np.log(np.clip(p, eps, 1 - eps) / (1 - np.clip(p, eps, 1 - eps)))
+    a, b = 1.0, 0.0
+    for _ in range(200):
+        q = 1.0 / (1.0 + np.exp(-(a * z + b)))
+        g = q - y
+        ga, gb = float(np.mean(g * z)), float(np.mean(g))
+        h = q * (1 - q)
+        haa = float(np.mean(h * z * z)) + 1e-6
+        hbb = float(np.mean(h)) + 1e-6
+        a -= ga / haa
+        b -= gb / hbb
+    return float(a), float(b)
+
+
+def _uygula(p: "np.ndarray", kal: tuple | None) -> "np.ndarray":
+    if not kal:
+        return p
+    a, b = kal
+    eps = 1e-6
+    z = np.log(np.clip(p, eps, 1 - eps) / (1 - np.clip(p, eps, 1 - eps)))
+    return 1.0 / (1.0 + np.exp(-(a * z + b)))
+
+
+def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
+          gizli: int = 48, lr: float = 2e-3, tarih=None,
+          sabir: int = 6) -> "object | None":
+    """Small MLP with a logistic output. Table in, 0/1 out.
+
+    Deliberately small: with a noisy target a big net memorises instead of
+    learning, and the baseline it's up against is simple anyway.
+
+    Training stops on a held-out tail of the training window rather than
+    running a fixed number of epochs, and the output gets rescaled on that
+    same tail. Without either, the model just keeps fitting noise and its
+    confidence drifts away from anything real.
     """
     from . import models as mz
 
@@ -242,6 +306,8 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
     sd[sd < 1e-9] = 1.0
     Z = (X - mu) / sd
 
+    tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
+
     net = nn.Sequential(
         nn.Linear(Z.shape[1], gizli), nn.LayerNorm(gizli), nn.GELU(),
         nn.Dropout(0.2),
@@ -252,29 +318,160 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
     kayip = nn.BCEWithLogitsLoss()
     Xt = torch.tensor(Z, dtype=torch.float32)
     yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
-
+    Xtr, ytr = Xt[tr], yt[tr]
     rng = np.random.default_rng(seed)
-    n = len(Xt)
+    n = len(Xtr)
     yigin = 4096
-    net.train()
+
+    en_iyi, en_iyi_skor, bekleme = None, np.inf, 0
     for _ in range(epochs):
+        net.train()
         sira = rng.permutation(n)
         for i in range(0, n, yigin):
             idx = sira[i:i + yigin]
             opt.zero_grad()
-            kayip(net(Xt[idx]), yt[idx]).backward()
+            kayip(net(Xtr[idx]), ytr[idx]).backward()
             opt.step()
+        if not val.any():
+            continue
+        net.eval()
+        with torch.no_grad():
+            pv = torch.sigmoid(net(Xt[val]).squeeze(-1)).numpy()
+        skor = brier(pv, y[val])
+        if skor < en_iyi_skor - 1e-6:
+            en_iyi_skor, bekleme = skor, 0
+            en_iyi = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        else:
+            bekleme += 1
+            if bekleme >= sabir:
+                break
+
+    if en_iyi is not None:
+        net.load_state_dict(en_iyi)
     net.eval()
-    return {"net": net, "mu": mu, "sd": sd}
+
+    kal = None
+    if val.any():
+        with torch.no_grad():
+            pv = torch.sigmoid(net(Xt[val]).squeeze(-1)).numpy()
+        kal = _platt(pv, y[val])
+    return {"net": net, "mu": mu, "sd": sd, "kal": kal}
 
 
-def _tahmin(model: dict, X: np.ndarray) -> np.ndarray:
+def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
+               epochs: int = 40, gizli: int = 48, lr: float = 2e-3,
+               tarih=None, sabir: int = 5):
+    """Same job as _egit, but it also reads the bars before the signal.
+
+    A small 1-D conv runs over the window and gets pooled down to a vector,
+    which is then glued to the scalar features and fed through the same head.
+    Conv rather than a recurrent net because it trains a lot faster here and
+    there's no long-range dependency to chase across 24 bars.
+    """
+    from . import models as mz
+
+    if not mz.torch_available():
+        return None
+    import torch
+    import torch.nn as nn
+
+    mz._tohumla(seed)
+    mu, sd = Xs.mean(0), Xs.std(0)
+    sd[sd < 1e-9] = 1.0
+    Zs = (Xs - mu) / sd
+
+    # Per-channel scaling over the whole window, so one loud channel
+    # (volume, usually) doesn't drown the rest.
+    dmu = Xd.reshape(-1, Xd.shape[2]).mean(0)
+    dsd = Xd.reshape(-1, Xd.shape[2]).std(0)
+    dsd[dsd < 1e-9] = 1.0
+    Zd = (Xd - dmu) / dsd
+
+    kanal = Xd.shape[2]
+
+    class Net(nn.Module):
+        def __init__(self):
+            super().__init__()
+            self.conv = nn.Sequential(
+                nn.Conv1d(kanal, 32, 3, padding=1), nn.GELU(),
+                nn.Conv1d(32, 32, 3, padding=1), nn.GELU(),
+                nn.AdaptiveAvgPool1d(1),
+            )
+            self.head = nn.Sequential(
+                nn.Linear(32 + Xs.shape[1], gizli), nn.LayerNorm(gizli),
+                nn.GELU(), nn.Dropout(0.2),
+                nn.Linear(gizli, gizli // 2), nn.GELU(),
+                nn.Linear(gizli // 2, 1),
+            )
+
+        def forward(self, d, s):
+            z = self.conv(d.transpose(1, 2)).squeeze(-1)
+            return self.head(torch.cat([z, s], dim=1))
+
+    net = Net()
+    opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-2)
+    kayip = nn.BCEWithLogitsLoss()
+    St = torch.tensor(Zs, dtype=torch.float32)
+    Dt = torch.tensor(Zd, dtype=torch.float32)
+    yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
+
+    tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
+    rng = np.random.default_rng(seed)
+    idx_tr = np.flatnonzero(tr)
+    n = len(idx_tr)
+    yigin = 2048
+
+    en_iyi, en_iyi_skor, bekleme = None, np.inf, 0
+    for _ in range(epochs):
+        net.train()
+        sira = rng.permutation(n)
+        for i in range(0, n, yigin):
+            idx = idx_tr[sira[i:i + yigin]]
+            opt.zero_grad()
+            kayip(net(Dt[idx], St[idx]), yt[idx]).backward()
+            opt.step()
+        if not val.any():
+            continue
+        net.eval()
+        with torch.no_grad():
+            pv = torch.sigmoid(
+                net(Dt[val], St[val]).squeeze(-1)).numpy()
+        skor = brier(pv, y[val])
+        if skor < en_iyi_skor - 1e-6:
+            en_iyi_skor, bekleme = skor, 0
+            en_iyi = {k: v.detach().clone() for k, v in net.state_dict().items()}
+        else:
+            bekleme += 1
+            if bekleme >= sabir:
+                break
+
+    if en_iyi is not None:
+        net.load_state_dict(en_iyi)
+    net.eval()
+
+    kal = None
+    if val.any():
+        with torch.no_grad():
+            pv = torch.sigmoid(net(Dt[val], St[val]).squeeze(-1)).numpy()
+        kal = _platt(pv, y[val])
+    return {"net": net, "mu": mu, "sd": sd, "dmu": dmu, "dsd": dsd,
+            "kal": kal, "dizi": True}
+
+
+def _tahmin(model: dict, X: np.ndarray, Xd: np.ndarray | None = None
+            ) -> np.ndarray:
     import torch
 
     Z = (X - model["mu"]) / model["sd"]
     with torch.no_grad():
-        z = model["net"](torch.tensor(Z, dtype=torch.float32)).squeeze(-1)
-        return torch.sigmoid(z).numpy().astype(np.float64)
+        St = torch.tensor(Z, dtype=torch.float32)
+        if model.get("dizi"):
+            Zd = (Xd - model["dmu"]) / model["dsd"]
+            z = model["net"](torch.tensor(Zd, dtype=torch.float32), St)
+        else:
+            z = model["net"](St)
+        p = torch.sigmoid(z.squeeze(-1)).numpy().astype(np.float64)
+    return _uygula(p, model.get("kal"))
 
 
 # =============================================================================
@@ -282,7 +479,8 @@ def _tahmin(model: dict, X: np.ndarray) -> np.ndarray:
 # =============================================================================
 def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                  n_kat: int = 4, embargo_gun: int = 5,
-                 bar_gun: float = 1.0, seed: int = 7) -> dict:
+                 bar_gun: float = 1.0, seed: int = 7,
+                 Xd: "np.ndarray | None" = None) -> dict:
     """Zaman sirali katmanlar; arindirma + tampon ile.
 
     Her katmanda: o katmandan ONCEKI gunlerle egit, katmanin kendisinde olc.
@@ -308,11 +506,19 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         if egitim_maske.sum() < MIN_SATIR or test_maske.sum() < 200:
             continue
 
-        model = _egit(veri["X"][egitim_maske], veri["y"][egitim_maske], seed=seed)
+        egitim_tarih = veri["tarih"][egitim_maske]
+        if Xd is not None:
+            model = _egit_dizi(veri["X"][egitim_maske], Xd[egitim_maske],
+                               veri["y"][egitim_maske], seed=seed,
+                               tarih=egitim_tarih)
+        else:
+            model = _egit(veri["X"][egitim_maske], veri["y"][egitim_maske],
+                          seed=seed, tarih=egitim_tarih)
         if model is None:
             return {"ok": False, "reason": "torch yok"}
 
-        p = _tahmin(model, veri["X"][test_maske])
+        p = _tahmin(model, veri["X"][test_maske],
+                    Xd[test_maske] if Xd is not None else None)
         y = veri["y"][test_maske]
         b = kova_olasiligi(kalib, veri["kurulum"][test_maske], ufuk,
                            {a: d[test_maske] for a, d in veri["kosullar"].items()},
@@ -341,6 +547,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     return {
         "ok": True,
         "ufuk": ufuk,
+        "dizi": Xd is not None,
         "satir": int(len(Y)),
         "gun": n_gun,
         "katlar": katlar,
@@ -357,9 +564,30 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     }
 
 
+def _barlari_yukle(frekans: str, semboller: set) -> dict:
+    """Cached bars for the symbols the panel actually references."""
+    from . import intraday as idy
+    from .providers import cache as _c
+
+    out = {}
+    for tk in sorted(semboller):
+        if frekans == "1d":
+            hit = _c.peek("yahoo", f"{tk}:2y")
+            h = (hit[0] or {}).get("history") if hit else None
+        else:
+            h = idy.oku(tk, frekans, max_gun=30)
+        if h is not None and len(h):
+            out[tk] = h
+    return out
+
+
 def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
-             n_kat: int = 4, seed: int = 7) -> dict:
-    """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer."""
+             n_kat: int = 4, seed: int = 7, dizi: bool = False,
+             pencere: int = 24) -> dict:
+    """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
+
+    dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
+    """
     from . import kalibrasyon as kb
     from . import kisa_vade as kv
 
@@ -372,15 +600,48 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     ufuklar = ufuklar or kv.ufuklar(frekans)
     bg = kv.bar_gun(frekans)
 
+    bars = _barlari_yukle(frekans, set(df["ticker"].unique())) if dizi else {}
+    if dizi and not bars:
+        return {"ok": False,
+                "reason": f"{frekans} bars are not cached - run: "
+                          f"python run.py intraday cek --interval {frekans}"}
+
     sonuc = []
+    pencere_ozet = None
     for u in ufuklar:
         veri = hazirla(df, u)
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
+
+        Xd = None
+        if dizi:
+            from . import dizi as dz
+
+            if veri.get("zaman") is None:
+                return {"ok": False,
+                        "reason": "panel has no 'zaman' column - rebuild it "
+                                  "with: python run.py kisa panel"}
+            anah = list(zip(veri["ticker"], veri["zaman"]))
+            Xd, bulundu = dz.pencereler(bars, anah, pencere)
+            pencere_ozet = dz.ozet(Xd, bulundu)
+            # Rows without a full window would train the model on blank
+            # history, so drop them instead of zero-filling.
+            if int(bulundu.sum()) < MIN_SATIR:
+                sonuc.append({"ufuk": u, "ok": False,
+                              "reason": f"only {int(bulundu.sum())} rows have "
+                                        f"a full window"})
+                continue
+            Xd = Xd[bulundu]
+            veri = {**veri, "X": veri["X"][bulundu], "y": veri["y"][bulundu],
+                    "tarih": veri["tarih"][bulundu],
+                    "kurulum": veri["kurulum"][bulundu],
+                    "kosullar": {a: d[bulundu]
+                                 for a, d in veri["kosullar"].items()}}
+
         taban = float((kalib or {}).get("taban", {}).get(str(u), 0.5))
         r = walk_forward(veri, u, kalib, taban, n_kat=n_kat,
-                         bar_gun=bg, seed=seed)
+                         bar_gun=bg, seed=seed, Xd=Xd)
         r["ozellik"] = len(veri["ozellik_adlari"])
         r.setdefault("ufuk", u)
         sonuc.append(r)
@@ -392,6 +653,9 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "panel_satir": int(len(df)),
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
+        "dizi": bool(dizi),
+        "pencere": pencere if dizi else None,
+        "pencere_ozet": pencere_ozet,
         "sonuclar": sonuc,
         "notlar_tr": _notlar(sonuc),
     }
@@ -428,15 +692,17 @@ def _notlar(sonuc: list) -> list[str]:
 
 
 def kaydet(payload: dict, path: Path | None = None) -> Path:
-    p = path or cikti_yolu(payload.get("frekans", "1d"))
+    p = path or cikti_yolu(payload.get("frekans", "1d"),
+                           bool(payload.get("dizi")))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                  encoding="utf-8")
     return p
 
 
-def yukle(frekans: str = "1d", path: Path | None = None) -> dict | None:
-    p = path or cikti_yolu(frekans)
+def yukle(frekans: str = "1d", path: Path | None = None,
+          dizi: bool = False) -> dict | None:
+    p = path or cikti_yolu(frekans, dizi)
     if not p.exists():
         return None
     try:
