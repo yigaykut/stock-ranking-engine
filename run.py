@@ -1893,6 +1893,194 @@ def cmd_clear_cache(args: argparse.Namespace) -> int:
     return 0
 
 
+def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
+                         limit: int | None = None) -> dict:
+    """Ag istegi YAPMADAN, onbellekteki gunluk barlari toplar.
+
+    Kisa vade taramasi gunluk taramadan SONRA calisir; onbellek zaten
+    tazedir. Ayrica ag istegi eklemek, gunluk taramanin hiz siniri
+    butcesini yer -- sistemin en kirilgan kaynagi o.
+    """
+    from src import watchlist as _wl
+    from src.providers import cache as _cache
+    out: dict = {}
+    try:
+        evren, _ = universe.build(["smallcap", "midcap", "wsb"])
+    except Exception:
+        evren = []
+    try:
+        izleme = [str(p.get("ticker")) for p in _wl.load() if p.get("ticker")]
+    except Exception:
+        izleme = []
+    semboller = list(dict.fromkeys(list(evren) + izleme))
+    if limit:
+        semboller = semboller[:limit]
+    azami = max_gun * 24 * 3600
+    for tk in semboller:
+        hit = _cache.peek("yahoo", f"{tk}:{period}")
+        if not hit:
+            continue
+        b, yas = hit
+        if yas > azami or not b or b.get("history") is None:
+            continue
+        out[tk] = b
+    return out
+
+
+def cmd_kisa(args: argparse.Namespace) -> int:
+    """Kisa vadeli kurulum taramasi ve kalibrasyonu.
+
+    Uzun vadeli siralamadan AYRI durur ve ayri dosyaya yazar. Ikisini ayni
+    tabloya koymak, iki farkli soruyu tek cevaba sikistirmak olurdu: uzun
+    vadeli skor bir SIRALAMA, buradaki cikti bir OLAY tespiti.
+    """
+    from src import kalibrasyon as kb
+    from src import kisa_vade as kv
+
+    eylem = getattr(args, "kisa_action", "tara")
+
+    if eylem == "kalibre":
+        print("=" * 74)
+        print("KISA VADE KALIBRASYONU")
+        print("=" * 74)
+        print("Onbellekteki gunluk barlar taraniyor (ag istegi yok)...",
+              flush=True)
+        bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        if not bundles:
+            print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
+                  file=sys.stderr)
+            return 1
+        print(f"  {len(bundles)} hisse", flush=True)
+
+        bench = None
+        try:
+            bd = yahoo.fetch_benchmark(args.benchmark, args.period, use_cache=True)
+            if bd is not None and "Close" in bd:
+                bench = bd["Close"]
+        except Exception:
+            bench = None
+        if bench is None:
+            print("  UYARI: endeks gecmisi yok, olcum ENDEKSSIZ yapilacak "
+                  "(yukselen piyasada her kurulum iyi gorunur)", file=sys.stderr)
+
+        def ilerleme(i, islenen):
+            print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
+
+        payload = kb.kur(bundles, bench, ufuklar=kv.UFUKLAR,
+                         min_bar=kv.MIN_BAR, ilerleme=ilerleme)
+        yol = kb.kaydet(payload)
+        _kalibrasyon_tablosu(payload)
+        print()
+        print(f"Kaydedildi: {yol}")
+        return 0
+
+    # --- bugunku tarama
+    kalib = kb.yukle()
+    bundles = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+    if not bundles:
+        print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
+              file=sys.stderr)
+        return 1
+
+    tablo = kv.tara(bundles)
+    if tablo.empty:
+        print("Bugun hicbir kurulum olusmadi.")
+        return 0
+
+    satirlar = []
+    for r in tablo.to_dict("records"):
+        g = kb.guven(kalib, r["kurulum"], r["ufuk"],
+                     {"oynaklik": r.get("oynaklik"),
+                      "likidite": r.get("likidite"),
+                      "trend_konumu": r.get("trend_konumu")})
+        satirlar.append({**r, "guven": g})
+
+    # Siralama: once olculmus VE tabandan ayirt edilebilir olanlar.
+    # Guc'e gore siralamak yanlis olurdu -- guc kurulumun ne kadar temiz
+    # olustugunu soyler, ise yarayip yaramadigini degil.
+    def anahtar(x):
+        g = x["guven"]
+        return (0 if g.get("ayirt_edilebilir") else 1,
+                -(g.get("edge") if g.get("edge") is not None else -1),
+                -x["guc"])
+    satirlar.sort(key=anahtar)
+
+    _kisa_tablo(satirlar, kalib)
+
+    OUT.mkdir(parents=True, exist_ok=True)
+    yol = OUT / "kisa_vade.json"
+    yol.write_text(json.dumps({
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "kalibrasyon_tarihi": (kalib or {}).get("generated_at"),
+        "sinyal_sayisi": len(satirlar),
+        "sinyaller": satirlar,
+    }, ensure_ascii=False, indent=1), encoding="utf-8")
+    print()
+    print(f"Kaydedildi: {yol}")
+    return 0
+
+
+def _kisa_tablo(satirlar: list, kalib: "dict | None") -> None:
+    print("=" * 98)
+    print("KISA VADELI KURULUMLAR")
+    print("=" * 98)
+    if not kalib:
+        print("  KALIBRASYON YOK — guven degeri uretilemiyor.")
+        print("  Once: python run.py kisa kalibre")
+    print()
+    baslik = (f"  {'SEMBOL':<8}{'KURULUM':<24}{'YON':<7}{'UFUK':>5}{'GUC':>6}"
+              f"{'GUVEN':>7}{'TABAN':>7}{'ARALIK':>14}{'ETKIN N':>9}  ORTAM")
+    print(baslik)
+    print("  " + "-" * 94)
+    for r in satirlar[:40]:
+        g = r["guven"]
+        if g["durum"] == "olculdu":
+            guven = f"%{100 * g['p']:.0f}"
+            taban = f"%{100 * g['taban']:.0f}"
+            aralik = f"%{100 * g['alt']:.0f}-%{100 * g['ust']:.0f}"
+            netkin = f"{g['n_etkin']:.0f}"
+            isaret = "*" if g.get("ayirt_edilebilir") else " "
+        else:
+            guven, taban, aralik, netkin = "-", "-", g["durum"], "-"
+            isaret = " "
+        print(f"{isaret} {r['ticker']:<8}{r['ad_tr'][:24]:<24}{r['yon']:<7}"
+              f"{r['ufuk']:>5}{r['guc']:>6.2f}{guven:>7}{taban:>7}{aralik:>14}"
+              f"{netkin:>9}  {r['oynaklik']}/{r['likidite']}")
+    if len(satirlar) > 40:
+        print(f"  ... toplam {len(satirlar)} sinyal (tamami kisa_vade.json icinde)")
+    print()
+    print("  * = alt guven siniri taban oranin USTUNDE, yani fark gurultuden")
+    print("      ayirt edilebiliyor. Yildizsiz satirlar icin bunu soyleyemeyiz.")
+    print("  GUVEN : gecmiste bu kurulum olustugunda endeksi gecme orani.")
+    print("  TABAN : ayni donemde rastgele bir gunun endeksi gecme orani.")
+    print("  Onemli olan ikisi arasindaki FARK; tek basina GUVEN degil.")
+    print("  Bu bir yatirim tavsiyesi degildir.")
+
+
+def _kalibrasyon_tablosu(payload: dict) -> None:
+    kovalar = [k for k in payload.get("kovalar", []) if k["kosul"] == "*"]
+    print()
+    print("=" * 94)
+    print("KURULUM BASARIMI — genel kova")
+    print("=" * 94)
+    print(f"  hisse {payload['hisse']} · kazanc tanimi: {payload['kazanc_tanimi']}")
+    tabanlar = ", ".join(f"{u}g %{100 * v:.0f}"
+                         for u, v in payload["taban"].items())
+    print(f"  taban oranlari: {tabanlar}")
+    print()
+    print(f"  {'KURULUM':<24}{'UFUK':>5}{'N':>8}{'ETKIN':>7}{'P':>7}"
+          f"{'TABAN':>7}{'EDGE':>8}{'ARALIK':>14}  DURUM")
+    print("  " + "-" * 90)
+    for k in sorted(kovalar, key=lambda x: (x["kurulum"], x["ufuk"])):
+        aralik = f"{k['alt']:.2f}-{k['ust']:.2f}"
+        print(f"  {k['kurulum'][:24]:<24}{k['ufuk']:>5}{k['n']:>8}"
+              f"{k['n_etkin']:>7.0f}{k['p']:>7.2f}{k['taban']:>7.2f}"
+              f"{k['edge']:>+8.3f}{aralik:>14}  {k['durum']}")
+    print()
+    for n in payload.get("notlar_tr", []):
+        print("  * " + n)
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Cok faktorlu hisse yatirim skorlama sistemi",
@@ -2062,6 +2250,21 @@ def main() -> int:
     dpl.add_argument("--build-only", action="store_true",
                      help="yalnizca yayin dizinini hazirla, gonderme")
 
+    kv_p = sub.add_parser("kisa", aliases=["short"],
+                          help="kisa vadeli kurulum taramasi ve kalibrasyonu "
+                               "(uzun vadeli siralamadan AYRI)")
+    kv_p.add_argument("kisa_action", nargs="?", default="tara",
+                      choices=["tara", "kalibre"],
+                      help="tara: bugunku kurulumlar - kalibre: gecmisten "
+                           "guven degerlerini olc")
+    kv_p.add_argument("--period", default="2y", help="onbellek gecmis araligi")
+    kv_p.add_argument("--cache-days", type=int, default=30,
+                      help="onbellekte bu kadar gunden eski kayit kullanilmaz")
+    kv_p.add_argument("--limit", type=int, default=None,
+                      help="yalnizca ilk N sembol (deneme icin)")
+    kv_p.add_argument("--benchmark", default="SPY",
+                      help="kazanc 'endeksten iyi' diye olculur")
+
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)
     cp.add_argument("--invalid-only", action="store_true",
@@ -2101,6 +2304,8 @@ def main() -> int:
         return cmd_watch(args)
     if args.cmd == "learn":
         return cmd_learn(args)
+    if args.cmd in ("kisa", "short"):
+        return cmd_kisa(args)
     if args.cmd == "clear-cache":
         return cmd_clear_cache(args)
     return cmd_scan(args)
