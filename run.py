@@ -705,6 +705,12 @@ def cmd_scan(args: argparse.Namespace) -> int:
     except Exception as exc:                      # defter kritik yol degil
         print(f"      UYARI: kagit defter guncellenemedi ({exc})")
 
+    # Kisa vadeli kurulumlar da PANODAN ONCE uretilmeli -- ayni sira kurali:
+    # pano kisa_vade.json'u okuyor, dosya panodan sonra yazilirsa pano her gun
+    # bir gun eskisini gosterir. Ayrica burada zaten elimizde olan `bundles`
+    # kullaniliyor; ayri bir onbellek turu gereksiz olurdu.
+    _kisa_vade_uret(bundles)
+
     html_path = report.write_html(result, diag, OUT / "dashboard.html", top_n=args.top)
     csv_path = report.write_csv(result, OUT / "ranking.csv")
     llm_path = ml.export_for_llm(result, diag, OUT / "llm_export.json", top_n=args.top)
@@ -1891,6 +1897,47 @@ def cmd_clear_cache(args: argparse.Namespace) -> int:
     n = cache.clear(args.namespace)
     print(f"{n} onbellek dosyasi silindi.")
     return 0
+
+
+def _kisa_vade_uret(bundles: dict) -> None:
+    """Gunluk taramanin bir parcasi olarak kisa vade sinyallerini yazar.
+
+    Kritik yol DEGIL: patlarsa tarama devam eder. Uzun vadeli siralama bu
+    dosyaya hicbir sekilde bagli degil.
+    """
+    try:
+        from src import kalibrasyon as kb
+        from src import kisa_vade as kv
+
+        tablo = kv.tara(bundles)
+        kalib = kb.yukle()
+        satirlar = []
+        for r in tablo.to_dict("records"):
+            g = kb.guven(kalib, r["kurulum"], r["ufuk"],
+                         {"oynaklik": r.get("oynaklik"),
+                          "likidite": r.get("likidite"),
+                          "trend_konumu": r.get("trend_konumu")})
+            satirlar.append({**r, "guven": g})
+        satirlar.sort(key=lambda x: (
+            0 if (x["guven"].get("ayirt_edilebilir")) else 1,
+            -(x["guven"].get("edge") if x["guven"].get("edge") is not None else -1),
+            -x["guc"]))
+
+        OUT.mkdir(parents=True, exist_ok=True)
+        (OUT / "kisa_vade.json").write_text(json.dumps({
+            "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+            "kalibrasyon_tarihi": (kalib or {}).get("generated_at"),
+            "sinyal_sayisi": len(satirlar),
+            "sinyaller": satirlar,
+        }, ensure_ascii=False, indent=1), encoding="utf-8")
+
+        olculen = sum(1 for x in satirlar if x["guven"]["durum"] == "olculdu")
+        ayirt = sum(1 for x in satirlar if x["guven"].get("ayirt_edilebilir"))
+        ek = (f", {olculen} tanesi olculmus, {ayirt} tanesi tabandan ayirt "
+              f"edilebilir" if kalib else " (kalibrasyon yok, guven uretilemedi)")
+        print(f"      kisa vade: {len(satirlar)} kurulum{ek}")
+    except Exception as exc:                      # kritik yol degil
+        print(f"      UYARI: kisa vade sinyalleri uretilemedi ({exc})")
 
 
 def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,

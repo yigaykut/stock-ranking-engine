@@ -158,6 +158,7 @@ def _payload(df: pd.DataFrame, diagnostics: dict, top_n: int) -> dict:
         "paper": _paper_state(),
         "factorIC": _factor_ic_state(),
         "factorTime": _factor_time_state(),
+        "kisaVade": _kisa_vade_state(),
         "regime": diagnostics.get("regime") or {},
         "health": _health_state(diagnostics),
     }
@@ -204,6 +205,32 @@ def _factor_time_state() -> dict | None:
         return json.loads(p.read_text(encoding="utf-8"))
     except Exception:
         return None
+
+
+def _kisa_vade_state() -> dict | None:
+    """Kisa vadeli kurulumlar + olculmus guven (bkz. src/kisa_vade.py).
+
+    Uzun vadeli siralamadan AYRI bir bolumde gosterilir. Ayni tabloya
+    konsaydi iki farkli soru tek cevaba sikisirdi: siralama "hangisi daha
+    iyi duruyor", bu ise "burada bugun bir kurulum var mi".
+    """
+    kok = Path(__file__).resolve().parents[1]
+    yol = kok / "output" / "kisa_vade.json"
+    if not yol.exists():
+        return None
+    try:
+        d = json.loads(yol.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+    sinyaller = d.get("sinyaller") or []
+    # Panoya yalnizca ilk 60 satir gider; tamami JSON'da duruyor.
+    d["sinyaller"] = sinyaller[:60]
+    d["toplam"] = len(sinyaller)
+    d["olculen"] = sum(1 for x in sinyaller
+                       if (x.get("guven") or {}).get("durum") == "olculdu")
+    d["ayirt_edilen"] = sum(1 for x in sinyaller
+                            if (x.get("guven") or {}).get("ayirt_edilebilir"))
+    return d
 
 
 def _health_state(diagnostics: dict) -> dict:
@@ -717,8 +744,22 @@ def build_html(df: pd.DataFrame, diagnostics: dict, top_n: int = 40,
     <div class="panel"><div id="icBody"></div></div>
   </section>
 
+  <section id="secKisa" hidden>
+    <div class="sec-head"><span class="sec-num">VI</span><h2>Kisa Vadeli Kurulumlar</h2></div>
+    <div class="sec-rule"></div>
+    <p class="sec-note">Yukaridaki siralamadan <b>ayri bir sorudur</b>: siralama
+      "hangi hisse digerlerinden iyi duruyor" der, bu bolum "bu hissede bugun
+      3-10 gunluk bir kurulum olustu mu" der. Bir hisse siralamada 400. olup
+      burada gorunebilir; ikisi ayni sey degildir.<br>
+      <b>Guven</b> bir tahmin degil, bir <b>sayimdir</b>: gecmiste bu kurulum
+      olustugunda kac kez endeks gecildi. Yaninda mutlaka <b>taban orani</b>
+      okunmali &mdash; yukselen piyasada rastgele bir gun bile endeksi yariya
+      yakin gecer, onemli olan aradaki farktir.</p>
+    <div class="panel"><div id="kisaBody"></div></div>
+  </section>
+
   <section id="secHealth" hidden>
-    <div class="sec-head"><span class="sec-num">VI</span><h2>Sistem Sagligi</h2></div>
+    <div class="sec-head"><span class="sec-num">VII</span><h2>Sistem Sagligi</h2></div>
     <div class="sec-rule"></div>
     <p class="sec-note">Otomasyonun kendi durumu &mdash; terminale girmeden gorunsun.</p>
     <div class="panel"><div id="healthBody"></div></div>
@@ -1013,6 +1054,67 @@ document.getElementById('m-fact').textContent = (D.active_factors||[]).length;
     <p class="muted">Hicbir agirlik bu tabloya bakilarak <b>otomatik degistirilmez</b>.
       Olcum bir oneridir; degisiklik senin kararindir.</p>`;
   document.getElementById('secIC').hidden = false;
+}})();
+
+/* ---------- kisa vadeli kurulumlar ---------- */
+(function kisaPanel() {{
+  const K = DATA.kisaVade;
+  if (!K || !K.sinyaller || !K.sinyaller.length) return;
+
+  const yzd = v => (v == null || !isFinite(v)) ? '&mdash;' : '%' + (100 * v).toFixed(0);
+
+  const satirlar = K.sinyaller.map(s => {{
+    const g = s.guven || {{}};
+    const olculdu = g.durum === 'olculdu';
+    const ayirt = !!g.ayirt_edilebilir;
+    /* Renk yalnizca OLCULMUS ve tabandan ayirt edilebilen satirlara verilir.
+       Olculmemis bir satiri renklendirmek, olmayan bir bilgiyi varmis gibi
+       gosterirdi -- bu panonun en cok kacindigi sey. */
+    const cls = !olculdu ? 'ic-warn' : (ayirt ? 'ic-ok' : 'ic-info');
+    const aralik = olculdu ? (yzd(g.alt) + '&ndash;' + yzd(g.ust)) : '&mdash;';
+    const durum = !olculdu
+      ? (g.durum === 'az veri' ? 'az veri' : 'olculmedi')
+      : (ayirt ? '<b>tabanin ustunde</b>' : 'tabandan ayirt edilemiyor');
+    return `<tr class="${{cls}}">
+      <td><b>${{s.ticker}}</b></td>
+      <td>${{s.ad_tr}}</td>
+      <td>${{s.yon === 'short' ? 'cikis' : 'giris'}}</td>
+      <td class="num">${{s.ufuk}}g</td>
+      <td class="num">${{s.guc.toFixed(2)}}</td>
+      <td class="num">${{olculdu ? yzd(g.p) : '&mdash;'}}</td>
+      <td class="num">${{olculdu ? yzd(g.taban) : '&mdash;'}}</td>
+      <td class="num">${{aralik}}</td>
+      <td class="num">${{olculdu ? Math.round(g.n_etkin) : '&mdash;'}}</td>
+      <td>${{durum}}</td>
+    </tr>`;
+  }}).join('');
+
+  const kalibNot = K.kalibrasyon_tarihi
+    ? `Guven degerleri ${{String(K.kalibrasyon_tarihi).slice(0, 10)}} tarihli
+       kalibrasyondan geliyor.`
+    : `<b>Kalibrasyon yok</b> &mdash; guven degeri uretilemiyor.
+       Terminalde: <code>python run.py kisa kalibre</code>`;
+
+  document.getElementById('kisaBody').innerHTML = `
+    <p class="muted">${{K.toplam}} kurulum bulundu, ${{K.olculen}} tanesinin
+      guven degeri olculebildi, ${{K.ayirt_edilen}} tanesi taban oranindan
+      ayirt edilebiliyor.<br>${{kalibNot}}</p>
+    <div class="tbl-scroll"><table class="mini wide"><thead><tr>
+      <th>Sembol</th><th>Kurulum</th><th>Taraf</th><th class="num">Ufuk</th>
+      <th class="num" title="Kurulumun ne kadar temiz olustugu. Olasilik DEGILDIR.">Guc</th>
+      <th class="num" title="Gecmiste bu kurulum olustugunda endeksi gecme orani">Guven</th>
+      <th class="num" title="Ayni donemde rastgele bir gunun endeksi gecme orani">Taban</th>
+      <th class="num">Aralik</th>
+      <th class="num" title="Etkin orneklem: ayni gun olusan sinyaller ve ortusen sonuclar dusuldukten sonra">Etkin n</th>
+      <th>Okuma</th>
+    </tr></thead><tbody>${{satirlar}}</tbody></table></div>
+    <p class="muted"><b>Guc</b> ile <b>Guven</b> ayni sey degildir: guc kurulumun
+      ne kadar temiz olustugunu, guven gecmiste ne olduguna dair sayimi anlatir.
+      Yuksek guc, yuksek guven demek degildir.<br>
+      Etkin orneklem ham sayimdan cok kucuktur: ayni gun olusan sinyaller tek bir
+      piyasa gunu yasar. Araliklar bu kucuk sayiyla hesaplanmistir.<br>
+      Hicbir satir alim/satim onerisi degildir.</p>`;
+  document.getElementById('secKisa').hidden = false;
 }})();
 
 /* ---------- sistem sagligi ---------- */
