@@ -538,10 +538,15 @@ def _kova_adi(k: dict) -> str:
 PANEL = DATA / "kisa_vade_panel.csv"
 
 
+def panel_yolu(frekans: str) -> Path:
+    return DATA / f"kisa_vade_panel_{frekans}.csv"
+
+
 def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           ufuklar: "tuple[int, ...]" = (3, 5, 10), min_bar: int = 220,
           yol: Path | None = None,
-          ilerleme: "callable | None" = None) -> dict:
+          ilerleme: "callable | None" = None,
+          frekans: str = "1d") -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -623,12 +628,17 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
 
     tablo = pd.concat(parcalar, ignore_index=True)
-    p = yol or PANEL
+    tablo.insert(2, "frekans", frekans)
+    # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
+    # kalibrasyonda birer kez yaptik: tek dosyaya yazilan iki olcum,
+    # ikincisi birincisini yok ediyor ve bunu hicbir sey soylemiyor.
+    p = yol or panel_yolu(frekans)
     p.parent.mkdir(parents=True, exist_ok=True)
     tablo.to_csv(p, index=False)
     return {
         "ok": True,
         "yol": str(p),
+        "frekans": frekans,
         "satir": int(len(tablo)),
         "hisse": islenen,
         "hatali": hatali,
@@ -636,7 +646,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         "tarih_araligi": [str(tablo["tarih"].min())[:10],
                           str(tablo["tarih"].max())[:10]],
         "ozellikler": [c for c in tablo.columns
-                       if c not in ("ticker", "tarih", "kurulum", "yon")
+                       if c not in ("ticker", "tarih", "kurulum", "yon",
+                                    "frekans")
                        and not c.startswith(("fazla_", "kazanc_"))],
         "etiketler": [c for c in tablo.columns
                       if c.startswith(("fazla_", "kazanc_"))],

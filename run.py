@@ -2083,7 +2083,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
 
         ozet = kb.panel(bundles, bench, ufuklar=kv.ufuklar(args.frekans),
-                        min_bar=kv.MIN_BAR, ilerleme=ilerleme)
+                        min_bar=kv.MIN_BAR, ilerleme=ilerleme,
+                        frekans=args.frekans)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1

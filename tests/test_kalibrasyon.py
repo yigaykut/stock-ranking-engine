@@ -299,6 +299,27 @@ try:
             check("ozellik listesinde etiket yok",
                   not any(c.startswith(("fazla_", "kazanc_"))
                           for c in oz["ozellikler"]))
+            check("frekans sutunu var ve ozellik sayilmiyor",
+                  "frekans" in t.columns
+                  and "frekans" not in oz["ozellikler"])
+
+    # Frekans basina AYRI dosya: saatlik panel gunlugu ezmemeli
+    with tempfile.TemporaryDirectory() as td:
+        eski_data = kb.DATA
+        kb.DATA = Path(td)
+        try:
+            a = kb.panel(evren(sonrasi=0.0, seed0=11), bench, ufuklar=(5,),
+                         min_bar=220, frekans="1d")
+            b_ = kb.panel(evren(sonrasi=0.0, seed0=11), bench, ufuklar=(21,),
+                          min_bar=220, frekans="1h")
+            check("iki panel ayri dosyaya yazildi", a["yol"] != b_["yol"],
+                  f"{Path(a['yol']).name} vs {Path(b_['yol']).name}")
+            check("gunluk panel duruyor", Path(a["yol"]).exists())
+            check("saatlik panel duruyor", Path(b_["yol"]).exists())
+            check("dosya adinda frekans var",
+                  "1h" in Path(b_["yol"]).name)
+        finally:
+            kb.DATA = eski_data
 
 finally:
     kv.KAYIT.pop(TEST_ID, None)
