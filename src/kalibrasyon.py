@@ -132,6 +132,22 @@ def _kosul_dilimleri(ks: pd.DataFrame) -> "list[tuple[str, pd.Series]]":
     return out
 
 
+def _zaman_indeks(idx) -> "pd.DatetimeIndex":
+    """Dilimsiz zaman damgasi (gune INDIRGEMEDEN).
+
+    Gun ici olcumde sart: saatlik bar ile saatlik endeksi gun bazinda
+    hizalarsak bir gunun butun barlari ayni endeks degerini alir, endeks
+    getirisi gun icinde SIFIR cikar ve "endeksten iyi" olcusu sessizce
+    "yukari gitti"ye donusur.
+    """
+    d = pd.DatetimeIndex(idx)
+    try:
+        d = d.tz_localize(None) if d.tz is None else d.tz_convert(None)
+    except (TypeError, AttributeError):
+        pass
+    return d
+
+
 def _gunluk_indeks(idx) -> "pd.DatetimeIndex":
     """Dilimli/dilimsiz karisik indeksi, dilimsiz gune indirger.
 
@@ -147,13 +163,19 @@ def _gunluk_indeks(idx) -> "pd.DatetimeIndex":
     return d.normalize()
 
 
-def _bench_hazirla(bench_close) -> "pd.Series | None":
+def _bench_hazirla(bench_close, gun_bazli: bool = True) -> "pd.Series | None":
+    """Endeks serisini hizalamaya hazirlar.
+
+    gun_bazli=True  -> indeks gune indirgenir (gunluk olcum)
+    gun_bazli=False -> zaman damgasi korunur (gun ici olcum)
+    """
     if bench_close is None or not len(bench_close):
         return None
     b = pd.to_numeric(bench_close, errors="coerce").dropna()
     if b.empty:
         return None
-    out = pd.Series(b.to_numpy(), index=_gunluk_indeks(b.index))
+    idx = _gunluk_indeks(b.index) if gun_bazli else _zaman_indeks(b.index)
+    out = pd.Series(b.to_numpy(), index=idx)
     return out[~out.index.duplicated(keep="last")].sort_index()
 
 
@@ -291,7 +313,8 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
     from . import kisa_vade as kv
 
     top = Toplayici(ufuklar, bar_gun=kv.bar_gun(frekans))
-    bench = _bench_hazirla(bench_close)
+    gun_bazli = (frekans == "1d")
+    bench = _bench_hazirla(bench_close, gun_bazli)
 
     islenen = hatali = 0
     for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
@@ -306,12 +329,13 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
             ks = kv.kosullar(df)
             dilimler = _kosul_dilimleri(ks)
 
-            gunler = _gunluk_indeks(df.index)
+            gunler = _gunluk_indeks(df.index)          # kova/gun sayimi icin
+            hiza = gunler if gun_bazli else _zaman_indeks(df.index)
 
             for ufuk in ufuklar:
                 getiri = ileri_getiri(df["Close"], ufuk)
                 if bench is not None:
-                    bh = bench.reindex(gunler).to_numpy()
+                    bh = bench.reindex(hiza).to_numpy()
                     bser = pd.Series(bh, index=df.index)
                     bgetiri = bser.shift(-ufuk) / bser - 1.0
                     fazla = getiri - bgetiri
@@ -572,7 +596,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     """
     from . import kisa_vade as kv
 
-    bench = _bench_hazirla(bench_close)
+    gun_bazli = (frekans == "1d")
+    bench = _bench_hazirla(bench_close, gun_bazli)
     parcalar: list[pd.DataFrame] = []
     islenen = hatali = 0
 
@@ -588,12 +613,13 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             oz = kv.ozellikler(df)
             ks = kv.kosullar(df)
             gunler = _gunluk_indeks(df.index)
+            hiza = gunler if gun_bazli else _zaman_indeks(df.index)
 
             etiketler = {}
             for ufuk in ufuklar:
                 getiri = ileri_getiri(df["Close"], ufuk)
                 if bench is not None:
-                    bser = pd.Series(bench.reindex(gunler).to_numpy(),
+                    bser = pd.Series(bench.reindex(hiza).to_numpy(),
                                      index=df.index)
                     getiri = getiri - (bser.shift(-ufuk) / bser - 1.0)
                 etiketler[ufuk] = getiri

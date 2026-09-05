@@ -370,6 +370,33 @@ finally:
 
 print()
 print("=" * 72)
+print("9c) GUN ICI ENDEKS HIZALAMASI")
+print("=" * 72)
+
+# Saatlik barlar + saatlik endeks: endeks getirisi gun ICINDE de sifirdan
+# farkli olmali. Gun bazinda hizalanirsa bir gunun tum barlari ayni endeks
+# degerini alir, endeks getirisi 0 cikar ve "endeksten iyi" olcusu sessizce
+# "yukari gitti"ye doner.
+saat_idx = pd.DatetimeIndex(
+    [pd.Timestamp("2025-01-02") + pd.Timedelta(hours=9 + b) + pd.Timedelta(days=g)
+     for g in range(300) for b in range(7)])
+bench_saat = pd.Series(np.linspace(100, 130, len(saat_idx)), index=saat_idx)
+
+gun_bazli = kb._bench_hazirla(bench_saat, gun_bazli=True)
+zaman_bazli = kb._bench_hazirla(bench_saat, gun_bazli=False)
+check("gun bazli hizalama gun basina TEK deger birakiyor",
+      len(gun_bazli) == 300, f"{len(gun_bazli)} (300 gun)")
+check("zaman bazli hizalama tum barlari koruyor",
+      len(zaman_bazli) == len(saat_idx), f"{len(zaman_bazli)}")
+# Kayan nokta: ayni degerin std'si tam sifir degil ~1e-14 cikiyor.
+check("gun bazli seride gun ici endeks getirisi SIFIR",
+      float((gun_bazli.reindex(saat_idx.normalize()).to_numpy()[:7]).std()) < 1e-9,
+      f"{float((gun_bazli.reindex(saat_idx.normalize()).to_numpy()[:7]).std()):.2e}")
+check("zaman bazli seride gun ici endeks getirisi sifir DEGIL",
+      float(zaman_bazli.to_numpy()[:7].std()) > 0)
+
+print()
+print("=" * 72)
 print("10) FREKANS FARKINDALIGI")
 print("=" * 72)
 

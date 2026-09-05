@@ -2020,10 +2020,23 @@ def _kisa_bench(args: argparse.Namespace):
     Endekssiz olcum, yukselen piyasada her kurulumu iyi gosterir; sessizce
     dusulmesi gereken bir seye degil, gorulmesi gereken bir eksige benziyor.
     """
+    frekans = getattr(args, "frekans", "1d")
     try:
-        bd = yahoo.fetch_benchmark(args.benchmark, args.period, use_cache=True)
-        if bd is not None and "Close" in bd:
-            return bd["Close"]
+        if frekans != "1d":
+            # GUN ICI OLCUMDE ENDEKS DE GUN ICI OLMALI. Gunluk endeksi
+            # saatlik barlara yaymak, gun icinde endeks getirisini SIFIR
+            # yapar ve "endeksten iyi" olcusu sessizce "yukari gitti"ye
+            # doner. Ayrica gunluk onbellek 2 yil, saatlik veri 3 yil --
+            # aradaki fark etiketsiz satir olarak kaybolur (%68 etiketli).
+            from src import intraday as idy
+            h = idy.cek(args.benchmark, frekans)
+            if h is not None and "Close" in h:
+                return h["Close"]
+        else:
+            bd = yahoo.fetch_benchmark(args.benchmark, args.period,
+                                       use_cache=True)
+            if bd is not None and "Close" in bd:
+                return bd["Close"]
     except Exception:
         pass
     print("  UYARI: endeks gecmisi yok, olcum ENDEKSSIZ yapilacak "
