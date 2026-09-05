@@ -2373,6 +2373,69 @@ def cmd_intraday(args: argparse.Namespace) -> int:
     return 0 if sonuc["durum"] == "tamam" else 2
 
 
+def cmd_meta(args: argparse.Namespace) -> int:
+    """Meta-model: kurulum tutacak mi?
+
+    Taban cizgisi 0.5 DEGIL, kova bazli kalibrasyonun kendisi. Elimizde zaten
+    calisan bir cevap var; model onun uzerine bir sey koymak zorunda.
+    """
+    from src import meta_model as mm
+
+    print("=" * 84)
+    print(f"META-MODEL — {args.frekans}")
+    print("=" * 84)
+    print("  Soru: 'bu kurulum tutacak mi?'  Taban cizgisi: kova kalibrasyonu")
+    print()
+
+    d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed)
+    if not d.get("ok"):
+        ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
+        print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
+              file=sys.stderr)
+        return 1
+
+    print(f"  panel {d['panel_satir']:,} satir · kalibrasyon "
+          f"{str(d.get('kalibrasyon'))[:10]}")
+    print()
+    print(f"  {'UFUK':>5}{'SATIR':>9}{'GUN':>6}{'OZ':>5}"
+          f"{'BRIER-M':>9}{'BRIER-K':>9}{'BRIER-T':>9}"
+          f"{'AUC-M':>7}{'AUC-K':>7}{'t':>7}  KARAR")
+    print("  " + "-" * 80)
+    for r in d["sonuclar"]:
+        if not r.get("ok"):
+            print(f"  {r['ufuk']:>5}  {r.get('reason', 'olculemedi')}")
+            continue
+        karar = ("MODEL DAHA IYI" if r["model_daha_iyi"]
+                 else "kovadan ayirt edilemiyor")
+        t = r.get("t_nw")
+        print(f"  {r['ufuk']:>5}{r['satir']:>9,}{r['gun']:>6}{r['ozellik']:>5}"
+              f"{r['brier_model']:>9.5f}{r['brier_kova']:>9.5f}"
+              f"{r['brier_taban']:>9.5f}{r['auc_model']:>7.3f}"
+              f"{r['auc_kova']:>7.3f}"
+              f"{(f'{t:+.2f}' if t is not None else '-'):>7}  {karar}")
+    print()
+    print("  BRIER-M model · BRIER-K kova · BRIER-T sabit taban orani.")
+    print("  Kucuk daha iyi. AUC 0.50 = siralama gucu yok.")
+    print("  t: gun bazinda Brier farkinin Newey-West duzeltmeli degeri.")
+    print()
+
+    for r in d["sonuclar"]:
+        g = r.get("guvenilirlik") or []
+        if len(g) < 3:
+            continue
+        print(f"  GUVENILIRLIK — ufuk {r['ufuk']} (tahmin -> gerceklesen)")
+        print("    " + "  ".join(
+            f"{100*x['tahmin']:.0f}->{100*x['gerceklesen']:.0f}" for x in g))
+    print()
+    for n in d.get("notlar_tr", []):
+        print("  * " + n)
+
+    yol = mm.kaydet(d)
+    print()
+    print(f"Kaydedildi: {yol}")
+    return 0
+
+
 def main() -> int:
     p = argparse.ArgumentParser(
         description="Cok faktorlu hisse yatirim skorlama sistemi",
@@ -2592,6 +2655,14 @@ def main() -> int:
                     help="istekler arasi saniye (hiz siniri icin)")
     ip.add_argument("--no-cache", action="store_true")
 
+    mp2 = sub.add_parser("meta", help="meta-model: kurulum tutacak mi? "
+                                      "(taban cizgisi kova kalibrasyonu)")
+    mp2.add_argument("--frekans", default="1h",
+                     choices=["1d", "1h", "30m", "15m"])
+    mp2.add_argument("--kat", type=int, default=4,
+                     help="ileri yuruyus katman sayisi")
+    mp2.add_argument("--seed", type=int, default=7)
+
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)
     cp.add_argument("--invalid-only", action="store_true",
@@ -2631,6 +2702,8 @@ def main() -> int:
         return cmd_watch(args)
     if args.cmd == "learn":
         return cmd_learn(args)
+    if args.cmd == "meta":
+        return cmd_meta(args)
     if args.cmd in ("intraday", "gunici"):
         return cmd_intraday(args)
     if args.cmd in ("havuz", "pool"):

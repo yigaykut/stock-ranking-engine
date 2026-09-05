@@ -507,6 +507,68 @@ kendiliğinden fark edilmezdi.
 
 ---
 
+## Meta-model — ilk ölçüm (06.09.2026)
+
+Saatlik panel: 336.731 satır, %99.96 etiketli, 33 özellik (10 sayısal + kova
+adları + kurulum kimliği one-hot). 4 katmanlı ileri yürüyüş, arındırma +
+tampon.
+
+**Taban çizgisi 0.5 değil, kova bazlı kalibrasyonun kendisi.**
+
+| Ufuk | Satır | Gün | Brier model | Brier kova | Brier sabit | AUC model | AUC kova | t |
+|---:|---:|---:|---:|---:|---:|---:|---:|---:|
+| 3b | 270.196 | 582 | 0.25185 | **0.24950** | 0.24970 | 0.506 | 0.512 | **−8.39** |
+| 7b | 270.019 | 581 | 0.25367 | **0.24922** | 0.24939 | 0.500 | 0.511 | **−7.41** |
+| 21b | 270.444 | 580 | 0.25508 | **0.24805** | 0.24841 | 0.499 | 0.512 | **−8.04** |
+
+Model kovadan iyi değil — **kovadan belirgin biçimde kötü.** t değerleri −7
+ile −8 arası, yani fark gürültü değil.
+
+### Güvenilirlik eğrisi — asıl anlatan tablo
+
+Tahmin edilen olasılık → gerçekleşen oran, on dilim:
+
+```
+ufuk  3b:  40->47  44->48  46->48  47->47  48->48  49->48  50->48  52->49  54->48  59->49
+ufuk  7b:  36->47  42->47  45->47  46->47  48->47  49->48  50->47  52->48  54->47  60->47
+ufuk 21b:  32->45  39->46  42->46  44->45  46->45  47->45  49->46  51->45  54->45  62->45
+```
+
+Model tahminini **%32 ile %62 arasında** oynatıyor. Gerçekleşen oran ise
+**%45–49 arasında sabit**. Yani model, olmayan bir şeyden yayılım üretiyor:
+"bu sinyal %62 tutar" dediği satırlarla "%32 tutar" dediği satırlar
+gerçekte aynı oranda tutuyor.
+
+AUC 0.499–0.506. 0.50 sıralama gücünün hiç olmaması demek.
+
+### Kova da neredeyse hiçbir şey katmıyor
+
+Dikkat: kova Brier'i 0.24950, sabit taban oranı 0.24970. Fark **0.0002**.
+Yani kova bazlı kalibrasyon da tek bir sayı söylemekten neredeyse ayırt
+edilemiyor. Zaten kalibrasyonun kendisi bunu söylüyordu (282 kovadan 0'ı
+tabanı aşıyor); Brier bunu ikinci bir yoldan doğruluyor.
+
+### Modelin kovadan KÖTÜ çıkması neden beklenen
+
+Öğrenilecek bir şey yokken model eğitim gürültüsüne uyar, ve bu örneklem
+dışında Brier'e maloluyor. Dürüst bir değerlendirmenin doğru davranışı bu.
+"Model biraz daha iyi" çıksaydı, önce ölçümde bir sızıntı arardım.
+
+### Bu "derin öğrenme çalışmıyor" demek değil
+
+Makine çalışıyor: ekilmiş kenarı bulduğunu ayrı bir testte gösteriyor
+(sentetik seride edge +0.30, alt sınır 0.887 > taban 0.662). Cümlenin doğru
+hali şu:
+
+> Bu 12 kurulumda, bu 33 özellikte, bu 147 hisselik havuzda, bu 730 günlük
+> pencerede öğrenilecek bir yapı yok.
+
+Bunların her biri değiştirilebilir. Sonuç, bir sonraki denemenin nereye
+bakması gerektiğini söylüyor: kurulumlar ve özellikler, veri miktarı değil —
+çünkü etkin örneklem 40'tan 700'e çıkarken kenar 0.030'dan 0.002'ye düştü.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
