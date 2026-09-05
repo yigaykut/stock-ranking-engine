@@ -309,6 +309,128 @@ alış-satış farkı tek başına bunu yiyebilir.
 
 ---
 
+## Hangi zaman dilimi? — karar ve gerekçesi
+
+Soru "1 dakika mı, 5 mi, 15 mi, 1 saat mi" gibi görünüyor ama aslında tek bir
+şeye bağlı: **kaç farklı gün veri var.**
+
+Bar sayısı yanıltır. 1 dakikalık veride bir hissede 2.730 bar olur — ama hepsi
+7 günden gelir. Kalibrasyonun etkin örneklem formülü zaten bunu söylüyor: aynı
+günün barları tek bir piyasa günüdür. Üstüne ileri getiri örtüşmesi de binince
+7 günden ölçülecek bir şey kalmaz.
+
+| Aralık | Sağlayıcı sınırı | Farklı gün | Ölçülebilir mi |
+|---|---|---:|---|
+| 1 dk | 7 gün | ~7 | **hayır** — etkin örneklem 1-2 |
+| 5 dk | 60 gün | ~60 | sınırda |
+| 15 dk | 60 gün | ~60 | sınırda |
+| 30 dk | 60 gün | ~60 | sınırda |
+| **1 saat** | **730 gün** | **~500** | **evet** |
+| 1 gün | sınırsız | ~500 | evet (zaten var) |
+
+**Birincil aralık: 1 saat.** Üç sebeple:
+
+1. **Tek çok yıllık gün içi çözünürlük.** 500 farklı gün, ~3.500 bar. 5 ve 15
+   dakika 60 günle sınırlı; o pencerede tek bir rejim var ve ölçüm o rejime
+   ait çıkar.
+2. **Derin öğrenme için kesit sayısı.** Günlükte ~500 zaman noktası var,
+   saatlikte ~3.500. Aynı takvim aralığından **7 kat fazla çapraz kesit.** Ve
+   bu, `AttnRanker`'ın zaten kurulu olduğu şekil: bir zaman noktasındaki
+   kesiti küme olarak işlemek.
+3. **Maliyet/kenar oranı.** 1-5 dakikada tipik hareket, makas + komisyonun
+   yanında küçük kalır. Saatlik ufuklarda (2-10 bar ≈ 2 saat - 1.5 gün)
+   hareket büyüklüğü, gerçek bir kenarın maliyeti aşabileceği mertebede.
+
+**Kontrol grubu: günlük.** Zaten elimizde ve aynı dedektörler orada ölçüldü.
+Saatlikte çıkan bir sonuç günlükte de bir iz bırakıyor mu — bu, tek başına
+saatlik sonuçtan daha güvenilir bir kanıt.
+
+**15 dakika şimdilik dışarıda ama kapı açık.** 60 günlük pencere kayan bir
+pencere: bugünden itibaren **arşivlemeye başlarsak** altı ay sonra ~120 günlük
+gerçek bir 15 dakikalık geçmişimiz olur. Sistem zaten bu disiplinle çalışıyor
+(günlük görüntü biriktir, sonra eğit); aynısı 15 dakikaya uygulanabilir.
+
+### Sınır varsayılmıyor, ölçülüyor
+
+Yukarıdaki "730 gün" belgelenmiş bir sayı ama **doğrulanmadı** — ölçmeye
+çalıştığım sırada hız sınırına takıldım. Bu yüzden koda gömülmedi.
+
+`src/intraday.py` her başarılı çekimde gerçekte ne geldiğini
+`data/intraday_kapsam.json`'a yazıyor: kaç bar, kaç farklı gün, hangi tarih
+aralığı. Son on ölçüm saklanıyor, yani sınır zamanla değişirse görülüyor. Aralık
+seçimi bu ölçülen sayılara bakıyor, benim yazdığım tabloya değil.
+
+```
+python run.py intraday kapsam
+```
+
+Bir de şu bulundu: `Ticker.history()` bu yfinance sürümünde her çağrıda
+`TypeError` fırlatıyor. `yf.download` aynı veriyi döndürüyor ve çalışıyor. Gün
+içi yolu bu yüzden ayrı bir modülde.
+
+---
+
+## Test havuzu — "benzer durumdaki şirketler"
+
+2.641 karışık hissede kısa vadeli kenar ölçmek, kurulumu değil **şirket farkını**
+ölçmektir. Günde 2 milyon dolarlık bir biyoteknoloji ile 50 milyon dolarlık bir
+bankayı aynı tabloya koyup "bu kurulum %52 tutturuyor" demek, iki farklı dünyanın
+ortalamasını almaktır; o ortalama ikisini de tarif etmez.
+
+**Sektör bir ağırlık değil, şart.** Sektör karışırsa ölçülen şey sektör
+rotasyonu olur ve her şeyi bastırır.
+
+Kalan dört eksen ağırlıklı uzaklıkla eşleşiyor:
+
+| Eksen | Ağırlık | Neden |
+|---|---:|---|
+| log piyasa değeri | 0.30 | Sektörden sonra çapraz kesitte en güçlü belirleyici |
+| log dolar hacim | 0.30 | Ölçülen kenarın işlem edilebilir olup olmadığını bu belirler |
+| oynaklık (ATR%) | 0.25 | Getirilerin büyüklüğü karşılaştırılabilir olsun |
+| log fiyat | 0.15 | Düşük fiyatta tik boyutu ve makas kenardan büyük olabilir |
+
+Likiditeye büyüklükle **eşit** ağırlık vermek bilinçli: kısa vade tarafının tüm
+iddiası "ölçülen kenar maliyeti aşıyor mu". Günlük 500 bin dolarlık hisseyle 50
+milyon dolarlığı aynı havuza koyarsan o soruyu soramazsın bile.
+
+### Neyin dışarıda bırakıldığı daha önemli
+
+Havuz **yapısal** niteliklerle kuruluyor. Trend, momentum, "MA200 üstünde
+olanlar" gibi **durum** nitelikleri bilerek kullanılmıyor.
+
+Sebep: bunlar zamanla değişir ve bugünkü değerleri, ölçeceğimiz dönemin
+sonucuyla kısmen aynı şeyden beslenir. "Yükselen trendde olan hisseler" kümesi,
+o trendin devam ettiği dönemde seçilmiş olur — sessiz bir ileriye bakıştır.
+
+Trend bir **seçim ölçütü** değil, bir **koşul etiketidir**. Kalibrasyon zaten
+her sinyali kendi ortamıyla kaydediyor.
+
+### Ölçülen sonuç
+
+6 havuz × 25 hisse = 150 sembol. Homojenlik iddia edilmiyor, ölçülüyor — her
+eksende havuzun çeyrekler arası genişliği evrenin kaçta kaçı:
+
+| Sektör | mcap | hacim | ATR% | fiyat | medyan mcap | medyan ATR% |
+|---|---:|---:|---:|---:|---:|---:|
+| Financial Services | 0.15x | 0.19x | **0.09x** | 0.18x | ~930M$ | %2.50 |
+| Healthcare | 0.24x | 0.19x | 0.27x | 0.15x | ~1.7Mr$ | %4.59 |
+| Technology | 0.28x | 0.25x | 0.30x | 0.47x | ~5.4Mr$ | %4.27 |
+| Industrials | 0.26x | 0.31x | 0.13x | 0.22x | ~5.5Mr$ | %3.48 |
+| Consumer Cyclical | 0.21x | 0.28x | 0.14x | 0.31x | ~4.4Mr$ | %3.79 |
+| Real Estate | 0.32x | 0.22x | 0.10x | 0.36x | ~3.5Mr$ | %2.04 |
+
+Hepsi evrenin yarısından dar, çoğu üçte birinden. Eşleme çalışmış.
+
+Havuzun pratik bir işi daha var: **2.755 hisse için saatlik veri çekmek hız
+sınırına çarpar, 150 hisse için çarpmaz.** Havuz olmadan saatlik ölçüm zaten
+mümkün değil.
+
+```
+python run.py havuz
+```
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
