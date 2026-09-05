@@ -258,9 +258,9 @@ hiçbir kurulum, "rastgele bir gün" olmaktan ayırt edilemiyor.
 | rsi2_asiri_satim | +0.033 | +0.027 | +0.029 | **+0.030** |
 | uc_gun_geri_cekilme | +0.027 | +0.024 | +0.020 | **+0.024** |
 | boga_yutan | −0.001 | +0.014 | +0.015 | +0.010 |
-| dagitim_gunu | +0.008 | +0.005 | +0.010 | +0.007 |
-| yutan_ayi | −0.009 | −0.000 | −0.001 | −0.003 |
-| bollinger_sikismasi | −0.007 | −0.006 | +0.001 | −0.004 |
+| dagitim_gunu (kısa) | −0.008 | −0.005 | −0.010 | −0.008 |
+| yutan_ayi (kısa) | +0.009 | −0.000 | +0.000 | +0.003 |
+| bollinger_sikismasi | −0.007 | −0.005 | +0.002 | −0.004 |
 | hacimli_kirilim | −0.003 | −0.008 | −0.008 | −0.006 |
 | nr7_ic_bar | −0.011 | −0.009 | −0.002 | −0.007 |
 | ma20_geri_cekilme | −0.012 | −0.007 | −0.003 | −0.007 |
