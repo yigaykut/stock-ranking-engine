@@ -833,6 +833,101 @@ gitmesi, AUC'nin 0.52'yi geçmesi ve null kontrolünün temiz gelmesi.
 
 ---
 
+## 21 güne odaklanma ve kenarın nereden geldiği (06.09.2026)
+
+Üç ufuk içinde 21 gün en sağlamıydı, o yüzden üzerine gidildi. Dört kaldıraç
+denendi ve **ayrı ayrı** ölçüldü.
+
+### 1. Üst dilim gün bazında seçilmeli — bu bir ayar değil, düzeltme
+
+`dilim_getirisi` üst %10'u **havuzlanmış** test kümesinden seçiyordu. Bu,
+"üç yılın bütün sinyalleri içinde hangileri en yüksek puan aldı" sorusudur.
+Model puanının seviyesi katmanlar ve rejimler arasında kaydığı için bu soru
+seçimleri birkaç tarihe yığıyor — sentetik testte 60 günün 28'ine. Oysa
+işleyebileceğiniz tek şey **bugünün adayları içinden bugünün en iyileri**.
+
+Etkisi büyük ve ters yönde:
+
+| | Getiri (10bp) | t | Medyan | Gün |
+|---|---:|---:|---:|---:|
+| Havuzlanmış seçim | +0.655% | +2.52 | +0.457% | 186 |
+| Gün bazında seçim | +0.810% | **+0.77** | −0.132% | 372 |
+
+Yani daha önce raporlanan t=2.52'nin bir kısmı hisse seçimi değil **tarih
+seçimi**ymiş. Doğru ölçütte getiri yükseliyor ama anlamlılık kayboluyor.
+
+### 2. Tohum topluluğu ve 3. sıralama hedefi
+
+Gürültülü bir hedefte ağ her tohumda başka bir yere düşüyor; tohumlar arası
+fark, aranan kenarla aynı mertebede. `--tohum-sayisi` birkaç tane eğitip
+ortalamasını alıyor. `--siralama` ise eğitim hedefini 0/1 yerine **aynı gün
+ateşlenen sinyaller içindeki yüzdelik sıra** yapıyor ve erken durdurmayı gün
+içi sıra korelasyonuna bağlıyor — BCE ve Brier, kimsenin işlem yapmadığı
+dağılım ortasına emek harcıyordu.
+
+| Varyant | Getiri (10bp) | t | Medyan | AUC |
+|---|---:|---:|---:|---:|
+| 1 tohum, 0/1 hedef | +0.810% | +0.77 | −0.132% | 0.528 |
+| 5 tohum | +0.974% | +0.52 | −0.143% | 0.530 |
+| 5 tohum + sıralama | +0.864% | **+2.25** | −0.267% | 0.523 |
+
+Topluluk getiriyi ve AUC'yi yükseltip t'yi düşürüyor: kazancı daha az güne
+yığıyor. Sıralama hedefi tam tersini yapıyor — getiri benzer, günden güne
+tutarlılık belirgin artıyor. İkisi birlikte t'yi 0.77'den 2.25'e taşıyor.
+
+### 4. Ama üst dilim neyden oluşuyor?
+
+Buraya kadar sayı iyileşiyordu. Asıl soru şuydu: model **neyi** seçiyor?
+Rapora bir satır eklendi — üst dilimin ortanca özellikleri, genelin
+ortancasına bölünerek:
+
+```
+ufuk 21: dolar_hacim=0.368  atr_pct=1.136  g_ma200_uzaklik=1.201
+```
+
+Model sistematik olarak **en az likit** isimleri seçiyor. Ve paneli dolar
+hacmine göre beşe bölünce sebep ortaya çıkıyor:
+
+| DV kovası | Ortanca DV | Ortalama akran-fazla | Medyan |
+|---|---:|---:|---:|
+| 0 (en ince) | 1.6M | **+1.594%** | +0.265% |
+| 1 | 5.5M | +0.139% | −0.209% |
+| 2 | 14.3M | −0.378% | −0.888% |
+| 3 | 32.4M | −0.767% | −1.240% |
+| 4 (en likit) | 78.7M | **−1.554%** | −2.340% |
+
+Beş kovada da tek yönlü. Bu temiz bir gradyan ve yönü yanlış tarafa bakıyor:
+önbellek **bugün kote olan** şirketleri tutuyor, sessizce ölenlerin çoğu
+küçüktü, dolayısıyla mikro-kap bandında kalan şey kazananlar — kaybedenler
+silinmiş halde. Hayatta kalma yanlılığı içeriden tam böyle görünür.
+
+### Kenar likit bir bantta duruyor mu? — Hayır
+
+`--min-hacim` ile taban konulduğunda:
+
+| Evren | Satır | Getiri (10bp) | t | Medyan | AUC | DV eğilimi |
+|---|---:|---:|---:|---:|---:|---:|
+| Tümü | 384k | +0.864% | +2.25 | −0.267% | 0.523 | 0.368 |
+| ≥ $5M/gün | 215k | **−0.484%** | −0.79 | −1.072% | 0.516 | 0.675 |
+| ≥ $20M/gün | 123k | **−0.656%** | −1.06 | −1.496% | 0.506 | 0.955 |
+
+Mikro-kaplar çıkınca kenar yok oluyor. Eğilim oranının 0.368 → 0.675 → 0.955
+diye kapanması mekanizmayı da gösteriyor: ölçülen +%0.864, hisse seçiminin
+değil likidite tarafına yaslanmanın getirisiydi.
+
+**Sonuç:** 21 günde, işlem yapılabilir bir evrende, bu özelliklerden ölçülebilir
+bir kenar çıkmıyor. Bu bir başarısızlık değil bir cevap — ve bu oturumdaki her
+ölçüm keskinleştikçe aynı yöne, sıfıra doğru gitti.
+
+### Kanıtlanamayan kısım
+
+Hayatta kalma yanlılığı **en güçlü açıklama**, ispat değil. İspatı için kote
+dışı kalmış hisselerin barları gerekir; yfinance onları vermiyor. Gradyanın
+tek yönlü olması, kenarın $5M üstünde yok olması ve modelin 0.368'lik eğilimi
+birlikte güçlü bir dolaylı kanıt oluşturuyor, o kadar.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
