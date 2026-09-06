@@ -2014,6 +2014,22 @@ def kisa_min_bar() -> int:
     return kv.MIN_BAR
 
 
+def _bellek() -> str:
+    """Current process memory, for the progress line.
+
+    The first full-universe panel build died at 2600 of 2755 symbols with no
+    traceback, which is what running out of address space looks like on
+    Windows. Printing the footprint as it grows means the next one tells us
+    where it went instead of just vanishing.
+    """
+    try:
+        import psutil
+
+        return f"  [{psutil.Process().memory_info().rss / 2**30:.2f} GB]"
+    except Exception:
+        return ""
+
+
 def _kisa_ufuklar(args: argparse.Namespace) -> tuple:
     """--ufuklar overrides the per-frequency default.
 
@@ -2086,7 +2102,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         bench = _kisa_bench(args)
 
         def ilerleme(i, islenen):
-            print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
+            print(f"      {i} sembol tarandi ({islenen} kullanildi)"
+                  f"{_bellek()}", flush=True)
 
         payload = kb.kur(bundles, bench, ufuklar=_kisa_ufuklar(args),
                          min_bar=kv.MIN_BAR, ilerleme=ilerleme,
@@ -2108,7 +2125,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         bench = _kisa_bench(args)
 
         def ilerleme(i, islenen):
-            print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
+            print(f"      {i} sembol tarandi ({islenen} kullanildi)"
+                  f"{_bellek()}", flush=True)
 
         from src import havuz as _hv
 
@@ -2460,7 +2478,8 @@ def cmd_meta(args: argparse.Namespace) -> int:
     d = mm.calistir(args.frekans, ufuklar=_kisa_ufuklar(args),
                     n_kat=args.kat, seed=args.seed,
                     dizi=args.dizi, pencere=args.pencere, etiket=args.etiket,
-                    maliyetler=maliyetler)
+                    maliyetler=maliyetler, gizli=args.gizli, devir=args.devir,
+                    sabir=args.sabir)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2766,6 +2785,12 @@ def main() -> int:
                      help="gidis-donus maliyet (baz puan), virgullu")
     mp2.add_argument("--ufuklar", default=None,
                      help="virgullu bar listesi (orn. 21,42,63)")
+    mp2.add_argument("--gizli", type=int, default=128,
+                     help="gizli katman genisligi")
+    mp2.add_argument("--devir", type=int, default=200,
+                     help="en fazla devir; erken durdurma daha once kesebilir")
+    mp2.add_argument("--sabir", type=int, default=15,
+                     help="dogrulama iyilesmeden kac devir beklensin")
     mp2.add_argument("--dizi", action="store_true",
                      help="sinyal oncesi barlari da modele ver "
                           "(grafigin sekli, sadece o anki degerler degil)")

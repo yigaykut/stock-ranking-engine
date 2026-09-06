@@ -32,6 +32,7 @@ BU DOSYA HICBIR SEY TAVSIYE ETMEZ. Frekans uretir. Karar kullanicinindir.
 """
 from __future__ import annotations
 
+import gc
 import json
 import math
 from datetime import datetime, timezone
@@ -193,6 +194,21 @@ CAPRAZ_OZELLIKLER = (
 )
 
 
+def _hafiflet(df: pd.DataFrame) -> pd.DataFrame:
+    """Drop float64 down to float32 in place.
+
+    The whole universe at daily bars is a few million rows wide by ~150
+    columns, and holding that twice over -- once in the per-ticker pieces and
+    once in the concatenated table -- is what killed the first full run. None
+    of these numbers need 15 significant digits; prices, ranks and returns are
+    all comfortable in float32, and it halves the bill.
+    """
+    for c in df.columns:
+        if df[c].dtype == np.float64:
+            df[c] = df[c].astype(np.float32)
+    return df
+
+
 def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
     """Peer-relative ranks, and the label with the peer move taken out.
 
@@ -219,17 +235,18 @@ def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
         return uzun
     g = uzun.groupby(["grup", "zaman"], sort=False)
 
-    sut = [c for c in CAPRAZ_OZELLIKLER if c in uzun.columns]
-    if sut:
-        siralar = g[sut].rank(pct=True)
-        siralar.columns = [f"x_{c[2:]}" if c.startswith("g_") else f"x_{c}"
-                           for c in sut]
-        uzun = pd.concat([uzun, siralar], axis=1)
+    # One column at a time. Ranking all twenty at once and concatenating the
+    # result doubles peak memory for no gain, and this frame is the largest
+    # thing the build ever holds.
+    for c in [c for c in CAPRAZ_OZELLIKLER if c in uzun.columns]:
+        ad = f"x_{c[2:]}" if c.startswith("g_") else f"x_{c}"
+        uzun[ad] = g[c].rank(pct=True).astype(np.float32)
 
     for u in ufuklar:
         ad = f"fazla_{u}g"
         if ad in uzun.columns:
-            uzun[f"akran_{u}g"] = uzun[ad] - g[ad].transform("mean")
+            uzun[f"akran_{u}g"] = (uzun[ad] - g[ad].transform("mean")
+                                   ).astype(np.float32)
     return uzun
 
 
@@ -733,8 +750,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                         b = bariyer.get((ad, ufuk))
                         if b is not None:
                             kol[f"{ad}_{ufuk}g"] = b.to_numpy()[var]
-                alt = pd.DataFrame(kol)
-                parcalar.append(alt)
+                parcalar.append(_hafiflet(pd.DataFrame(kol)))
 
             if gruplar and genis is not None and tk in gruplar:
                 sut = [c for c in CAPRAZ_OZELLIKLER if c in genis.columns]
@@ -744,7 +760,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     cx[c] = genis[c].to_numpy()
                 for ufuk, g_ in etiketler.items():
                     cx[f"fazla_{ufuk}g"] = g_.to_numpy()
-                capraz_parcalar.append(cx)
+                capraz_parcalar.append(_hafiflet(cx))
             islenen += 1
         except Exception:
             hatali += 1
@@ -755,16 +771,19 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     if not parcalar:
         return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
 
-    tablo = pd.concat(parcalar, ignore_index=True)
+    tablo = pd.concat(parcalar, ignore_index=True, copy=False)
+    parcalar.clear()
+    gc.collect()
     tablo.insert(3, "frekans", frekans)
 
     capraz_bilgi = None
     if capraz_parcalar:
-        uzun = pd.concat(capraz_parcalar, ignore_index=True)
+        uzun = pd.concat(capraz_parcalar, ignore_index=True, copy=False)
+        capraz_parcalar.clear()
+        gc.collect()
         uzun = capraz_kesit(uzun, ufuklar)
         tut = (["ticker", "zaman"]
                + [c for c in uzun.columns if c.startswith(("x_", "akran_"))])
-        tablo = tablo.merge(uzun[tut], on=["ticker", "zaman"], how="left")
         capraz_bilgi = {
             "grup": int(uzun["grup"].nunique()),
             "hisse": int(uzun["ticker"].nunique()),
@@ -772,13 +791,18 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "sutun": [c for c in uzun.columns if c.startswith("x_")],
             "etiket": [c for c in uzun.columns if c.startswith("akran_")],
         }
+        # Drop everything the merge doesn't need before the merge, not after.
+        uzun = uzun[tut]
+        gc.collect()
+        tablo = tablo.merge(uzun, on=["ticker", "zaman"], how="left")
         del uzun
+        gc.collect()
     # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
     # kalibrasyonda birer kez yaptik: tek dosyaya yazilan iki olcum,
     # ikincisi birincisini yok ediyor ve bunu hicbir sey soylemiyor.
     p = yol or panel_yolu(frekans)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tablo.to_csv(p, index=False)
+    tablo.to_csv(p, index=False, float_format="%.6g")
     return {
         "ok": True,
         "yol": str(p),

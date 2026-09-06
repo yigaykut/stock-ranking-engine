@@ -360,9 +360,9 @@ def _uygula(p: "np.ndarray", kal: tuple | None) -> "np.ndarray":
     return 1.0 / (1.0 + np.exp(-(a * z + b)))
 
 
-def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
-          gizli: int = 48, lr: float = 2e-3, tarih=None,
-          sabir: int = 6) -> "object | None":
+def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
+          gizli: int = 128, lr: float = 2e-3, tarih=None,
+          sabir: int = 15) -> "object | None":
     """Small MLP with a logistic output. Table in, 0/1 out.
 
     Deliberately small: with a noisy target a big net memorises instead of
@@ -387,9 +387,15 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
 
     tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
 
+    # Three layers rather than two, and wider. Capacity on its own doesn't
+    # find signal that isn't there -- it finds more ways to memorise the
+    # training window -- so the size is only safe because early stopping
+    # decides when to quit and the output gets rescaled afterwards.
     net = nn.Sequential(
         nn.Linear(Z.shape[1], gizli), nn.LayerNorm(gizli), nn.GELU(),
-        nn.Dropout(0.2),
+        nn.Dropout(0.25),
+        nn.Linear(gizli, gizli), nn.LayerNorm(gizli), nn.GELU(),
+        nn.Dropout(0.15),
         nn.Linear(gizli, gizli // 2), nn.GELU(),
         nn.Linear(gizli // 2, 1),
     )
@@ -438,8 +444,8 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 60,
 
 
 def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
-               epochs: int = 40, gizli: int = 48, lr: float = 2e-3,
-               tarih=None, sabir: int = 5):
+               epochs: int = 120, gizli: int = 128, lr: float = 2e-3,
+               tarih=None, sabir: int = 12):
     """Same job as _egit, but it also reads the bars before the signal.
 
     A small 1-D conv runs over the window and gets pooled down to a vector,
@@ -560,7 +566,8 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                  n_kat: int = 4, embargo_gun: int = 5,
                  bar_gun: float = 1.0, seed: int = 7,
                  Xd: "np.ndarray | None" = None,
-                 maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0)) -> dict:
+                 maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
+                 gizli: int = 128, devir: int = 200, sabir: int = 15) -> dict:
     """Zaman sirali katmanlar; arindirma + tampon ile.
 
     Her katmanda: o katmandan ONCEKI gunlerle egit, katmanin kendisinde olc.
@@ -590,10 +597,12 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         if Xd is not None:
             model = _egit_dizi(veri["X"][egitim_maske], Xd[egitim_maske],
                                veri["y"][egitim_maske], seed=seed,
-                               tarih=egitim_tarih)
+                               tarih=egitim_tarih, gizli=gizli,
+                               epochs=max(40, devir // 2), sabir=sabir)
         else:
             model = _egit(veri["X"][egitim_maske], veri["y"][egitim_maske],
-                          seed=seed, tarih=egitim_tarih)
+                          seed=seed, tarih=egitim_tarih, gizli=gizli,
+                          epochs=devir, sabir=sabir)
         if model is None:
             return {"ok": False, "reason": "torch yok"}
 
@@ -675,7 +684,8 @@ def _barlari_yukle(frekans: str, semboller: set) -> dict:
 def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              n_kat: int = 4, seed: int = 7, dizi: bool = False,
              pencere: int = 24, etiket: str = "kazanc",
-             maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0)) -> dict:
+             maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
+             gizli: int = 128, devir: int = 200, sabir: int = 15) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -749,7 +759,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
             kalib_kul = None
         r = walk_forward(veri, u, kalib_kul, taban, n_kat=n_kat,
                          bar_gun=bg, seed=seed, Xd=Xd,
-                         maliyetler=maliyetler)
+                         maliyetler=maliyetler, gizli=gizli, devir=devir,
+                         sabir=sabir)
         r["getiri_ad"] = veri.get("getiri_ad")
         r["taban_orani"] = round(taban, 4)
         r["ozellik"] = len(veri["ozellik_adlari"])
@@ -764,6 +775,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
         "etiket": etiket,
+        "model": {"gizli": gizli, "devir": devir, "sabir": sabir},
         "dizi": bool(dizi),
         "pencere": pencere if dizi else None,
         "pencere_ozet": pencere_ozet,
