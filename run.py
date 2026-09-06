@@ -2458,6 +2458,11 @@ def cmd_meta(args: argparse.Namespace) -> int:
     """
     from src import meta_model as mm
 
+    ev = d.get("evren")
+    if ev:
+        print(f"  Evren : gunluk dolar hacim >= {ev['min_hacim']:,.0f} — "
+              f"{ev['once']:,} satirdan {ev['sonra']:,} kaldi "
+              f"({ev['hisse']:,} hisse)")
     print("=" * 84)
     print(f"META-MODEL — {args.frekans}")
     print("=" * 84)
@@ -2481,7 +2486,8 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     maliyetler=maliyetler, gizli=args.gizli, devir=args.devir,
                     sabir=args.sabir, karistir=args.karistir,
                     tohum_sayisi=args.tohum_sayisi, siralama=args.siralama,
-                    gunluk_dilim=not args.havuz_dilim)
+                    gunluk_dilim=not args.havuz_dilim,
+                    min_hacim=args.min_hacim)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2530,6 +2536,21 @@ def cmd_meta(args: argparse.Namespace) -> int:
         satir += f"{100 * ilk['ortanca']:>10.3f}%"
         print(satir)
     print()
+    ilk_eg = next((((x.get("dilim") or {}).get("10bp") or {}).get("egilim")
+                   for x in d["sonuclar"]
+                   if ((x.get("dilim") or {}).get("10bp") or {}).get("egilim")),
+                  None)
+    if ilk_eg:
+        print("  UST DILIM NEYE YASLANIYOR (ortanca ust / ortanca tum)")
+        for r_ in d["sonuclar"]:
+            eg = ((r_.get("dilim") or {}).get("10bp") or {}).get("egilim")
+            if not eg:
+                continue
+            par = "  ".join(f"{a}={v['oran']}" for a, v in eg.items())
+            print(f"    ufuk {r_['ufuk']}: {par}")
+        print("    1.0'dan uzak bir oran, getirinin modele degil o ozellige "
+              "ait olabilecegi anlamina gelir.")
+        print()
     print("  BRIER-M model · BRIER-K kova · BRIER-T sabit taban orani.")
     print("  Kucuk daha iyi. AUC 0.50 = siralama gucu yok.")
     print("  t: gun bazinda Brier farkinin Newey-West duzeltmeli degeri.")
@@ -2796,6 +2817,10 @@ def main() -> int:
                      help="NULL KONTROL: etiketi gun icinde karistirip ayni "
                           "olcumu tekrarla. Kenar burada da cikiyorsa kenar "
                           "veride degil olcumdedir.")
+    mp2.add_argument("--min-hacim", type=float, default=0.0, dest="min_hacim",
+                     help="bu gunluk dolar hacmin altindaki satirlari at "
+                          "(orn. 5000000). Mikro-kap bandinda olculen kenarin "
+                          "buyuk kismi hayatta kalma yanliligidir.")
     mp2.add_argument("--tohum-sayisi", type=int, default=1,
                      dest="tohum_sayisi",
                      help="kac farkli tohumla egitip ortalamasini alsin")

@@ -174,6 +174,13 @@ def hazirla(df: pd.DataFrame, ufuk: int,
         "ticker": alt["ticker"].to_numpy(),
         "getiri": getiri,
         "getiri_ad": getiri_ad,
+        # Kept so the report can say WHAT the top decile is made of, not just
+        # what it returned. A model that quietly concentrates on illiquid
+        # names is harvesting the fact that the cache only holds companies
+        # that are still listed today, and that is not a signal.
+        "nitelik": {a: pd.to_numeric(alt[a], errors="coerce").to_numpy()
+                    for a in ("dolar_hacim", "atr_pct", "g_ma200_uzaklik")
+                    if a in alt.columns},
         "kurulum": alt["kurulum"].to_numpy(),
         "kosullar": {c: alt[c].astype(str).to_numpy() for c in kategorik},
         "ozellik_adlari": list(XX.columns),
@@ -280,7 +287,8 @@ def _budanmis(getiri: np.ndarray, gun: pd.DatetimeIndex,
 def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
                    maliyet_bp: float = 0.0, ufuk_gun: int = 1,
-                   gun_bazinda: bool = True) -> dict:
+                   gun_bazinda: bool = True,
+                   nitelik: "dict | None" = None) -> dict:
     """What the top slice actually returned, net of costs.
 
     This is the number that decides whether the model is worth anything.
@@ -360,6 +368,16 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
         "t_nw": None if not np.isfinite(tv) else round(float(tv), 2),
         "gecikme": int(gecikme),
         "gun_bazinda": bool(gun_bazinda),
+        # Median of each characteristic inside the top slice against the
+        # median over everything. A ratio far from 1 means the picks share a
+        # trait, and the return may belong to the trait rather than the model.
+        "egilim": {
+            a: {"ust": round(float(np.nanmedian(v[ust])), 4),
+                "tum": round(float(np.nanmedian(v)), 4),
+                "oran": (round(float(np.nanmedian(v[ust]) / np.nanmedian(v)), 3)
+                         if np.nanmedian(v) not in (0, np.nan) else None)}
+            for a, v in (nitelik or {}).items()
+            if np.isfinite(v).any()},
         "maliyet_bp": maliyet_bp,
         "dilimler": dilimler,
     }
@@ -719,6 +737,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     parcalar = np.array_split(gunler, n_kat + 1)
     katlar = []
     tum_p, tum_b, tum_y, tum_t, tum_r = [], [], [], [], []
+    tum_i = []
 
     for k in range(1, n_kat + 1):
         test_gun = set(pd.Timestamp(g) for g in parcalar[k])
@@ -777,6 +796,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         tum_p.append(p); tum_b.append(b); tum_y.append(y)
         tum_t.append(veri["tarih"][test_maske])
         tum_r.append(veri["getiri"][test_maske])
+        tum_i.append(test_maske)
 
     if not katlar:
         return {"ok": False, "reason": "hicbir katman kurulamadi"}
@@ -785,9 +805,12 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     Y = np.concatenate(tum_y); T = pd.DatetimeIndex(np.concatenate(tum_t))
     R = np.concatenate(tum_r)
     fark, t, n_gun = gunluk_fark(P, B, Y, T, ufuk_gun=ufuk_gun)
+    N = {a: np.concatenate([v[i] for i in tum_i])
+         for a, v in (veri.get("nitelik") or {}).items()}
     dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c,
                                            ufuk_gun=ufuk_gun,
-                                           gun_bazinda=gunluk_dilim)
+                                           gun_bazinda=gunluk_dilim,
+                                           nitelik=N)
              for c in maliyetler}
 
     return {
@@ -840,7 +863,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
              gizli: int = 128, devir: int = 200, sabir: int = 15,
              karistir: int = 0, tohum_sayisi: int = 1,
-             siralama: bool = False, gunluk_dilim: bool = True) -> dict:
+             siralama: bool = False, gunluk_dilim: bool = True,
+             min_hacim: float = 0.0) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -853,6 +877,26 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         return {"ok": False,
                 "reason": f"panel yok — once: python run.py kisa panel "
                           f"--frekans {frekans}"}
+    # Drop the illiquid tail before anything else sees it.
+    #
+    # Left alone, the model picks it: the top decile's median dollar volume
+    # came out at 0.368x the median of everything, and that bucket is exactly
+    # where the measured peer-excess return is highest -- least liquid
+    # quintile +1.59% mean, most liquid -1.55%. That gradient is what
+    # survivorship looks like. The cache holds companies still listed today,
+    # and the ones that quietly died were mostly small, so what survives in
+    # the microcap bucket is the winners with the losers deleted. An edge
+    # that lives only down there is not an edge you could have traded.
+    evren = None
+    if min_hacim > 0 and "dolar_hacim" in df.columns:
+        once = len(df)
+        df = df[pd.to_numeric(df["dolar_hacim"], errors="coerce") >= min_hacim]
+        evren = {"min_hacim": float(min_hacim), "once": once, "sonra": len(df),
+                 "hisse": int(df["ticker"].nunique()) if len(df) else 0}
+        if len(df) < MIN_SATIR:
+            return {"ok": False,
+                    "reason": f"hacim suzgecinden sonra {len(df)} satir kaldi"}
+
     kalib = kb.yukle(frekans=frekans)
     ufuklar = ufuklar or kv.ufuklar(frekans)
     bg = kv.bar_gun(frekans)
@@ -894,6 +938,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
             veri = {**veri, "X": veri["X"][bulundu], "y": veri["y"][bulundu],
                     "y_egitim": veri["y_egitim"][bulundu],
                     "getiri": veri["getiri"][bulundu],
+                    "nitelik": {a: v[bulundu]
+                                for a, v in (veri.get("nitelik") or {}).items()},
                     "tarih": veri["tarih"][bulundu],
                     "kurulum": veri["kurulum"][bulundu],
                     "kosullar": {a: d[bulundu]
@@ -920,6 +966,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
                          maliyetler=maliyetler, gizli=gizli, devir=devir,
                          sabir=sabir, tohum_sayisi=tohum_sayisi,
                          gunluk_dilim=gunluk_dilim)
+        r["evren"] = evren
         r["getiri_ad"] = veri.get("getiri_ad")
         r["taban_orani"] = round(taban, 4)
         r["ozellik"] = len(veri["ozellik_adlari"])
@@ -931,6 +978,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "frekans": frekans,
         "ok": any(r.get("ok") for r in sonuc),
         "panel_satir": int(len(df)),
+        "evren": evren,
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
         "etiket": etiket,
