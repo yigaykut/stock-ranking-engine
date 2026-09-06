@@ -2509,8 +2509,8 @@ def cmd_meta(args: argparse.Namespace) -> int:
     print("  UST DILIM GETIRISI (model en yuksek %10, maliyet dusulmus)")
     print(f"  {'UFUK':>5}{'N':>8}{'GUN':>6}{'TABAN':>9}"
           + "".join(f"{k:>11}" for k in maliyet_basliklari(d))
-          + f"{'t(10bp)':>9}")
-    print("  " + "-" * 66)
+          + f"{'t(10bp)':>9}{'ORTANCA':>11}")
+    print("  " + "-" * 77)
     for r in d["sonuclar"]:
         if not r.get("ok"):
             continue
@@ -2525,6 +2525,7 @@ def cmd_meta(args: argparse.Namespace) -> int:
             satir += f"{100 * (v.get('getiri') or 0):>10.3f}%"
         t10 = (dl.get("10bp") or {}).get("t_nw")
         satir += f"{(f'{t10:+.2f}' if t10 is not None else '-'):>9}"
+        satir += f"{100 * ilk['ortanca']:>10.3f}%"
         print(satir)
     print()
     print("  BRIER-M model · BRIER-K kova · BRIER-T sabit taban orani.")

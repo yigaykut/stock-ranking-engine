@@ -220,6 +220,37 @@ check("overlap widens the error bar", abs(genis["t_nw"]) < abs(dar["t_nw"]),
       f"t {dar['t_nw']} with lag 1 -> {genis['t_nw']} with lag 63")
 
 print()
+print("=" * 72)
+print("7) A FEW HUGE ROWS CANNOT CARRY THE AVERAGE")
+print("=" * 72)
+
+# The real peer-excess return over 63 days has a mean of +0.56% and a median
+# of -2.11%, with one row at +2479%. Averages on that shape are meaningless,
+# so each day's cross-section gets clipped at its own 1st/99th percentile.
+gun3 = pd.DatetimeIndex(np.repeat(pd.date_range("2025-01-01", periods=50), 200))
+temiz = rng2.normal(-0.02, 0.05, len(gun3))
+kirli = temiz.copy()
+kirli[::400] = 25.0                       # a handful of +2500% moves
+
+check("the raw average is dragged positive",
+      temiz.mean() < 0 < kirli.mean(),
+      f"{100*temiz.mean():+.2f}% -> {100*kirli.mean():+.2f}%")
+
+kirpik = mm._budanmis(kirli, gun3)
+check("clipping puts the average back where the mass is",
+      kirpik.mean() < 0, f"{100*kirpik.mean():+.3f}%")
+check("clipping barely moves clean data",
+      abs(mm._budanmis(temiz, gun3).mean() - temiz.mean()) < 0.002,
+      f"{100*temiz.mean():+.3f}% -> {100*mm._budanmis(temiz, gun3).mean():+.3f}%")
+check("nothing is dropped", len(kirpik) == len(kirli))
+check("only the same day is used for the bounds",
+      float(np.max(np.abs(mm._budanmis(temiz, gun3)))) <= float(np.max(np.abs(temiz))))
+
+d2 = mm.dilim_getirisi(tahmin, getiri, gun, maliyet_bp=10)
+check("the median is reported next to the mean",
+      "ortanca" in d2 and "taban_ortanca" in d2)
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

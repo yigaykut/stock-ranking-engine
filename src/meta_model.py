@@ -128,6 +128,8 @@ def hazirla(df: pd.DataFrame, ufuk: int,
                       if c in alt.columns), None)
     getiri = (alt[getiri_ad].to_numpy(dtype=np.float64)
               if getiri_ad else np.zeros(len(alt)))
+    if getiri_ad and zaman is not None:
+        getiri = _budanmis(getiri, pd.DatetimeIndex(alt["tarih"]).normalize())
     # Some label columns are already 0/1 (kazanc, bariyer). The peer one is a
     # return, and BCE needs a class, so it gets thresholded at zero -- "did it
     # beat its peer group" rather than "by how much". The size is kept
@@ -225,6 +227,29 @@ def guvenilirlik(p: np.ndarray, y: np.ndarray, dilim: int = 10) -> list[dict]:
     return out
 
 
+def _budanmis(getiri: np.ndarray, gun: pd.DatetimeIndex,
+              alt_p: float = 0.01, ust_p: float = 0.99) -> np.ndarray:
+    """Clip each day's cross-section at its 1st and 99th percentile.
+
+    Without this the average is a fiction. Over 63 days the peer-excess return
+    has a mean of +0.56% and a median of -2.11%: the typical stock loses to its
+    group and the positive average comes from a handful of names, one of them
+    up 2479%. The top 1% of rows carry four times the entire sum. Moves that
+    size are usually a reverse split that never got adjusted, and no portfolio
+    ever collects them anyway.
+
+    Clipping uses only the same day's cross-section, so nothing from the future
+    enters, and it's applied to every row alike -- the top decile and the base
+    rate are trimmed by the same rule.
+    """
+    out = getiri.astype(np.float64, copy=True)
+    s = pd.Series(out)
+    g = s.groupby(np.asarray(gun))
+    lo = g.transform(lambda x: x.quantile(alt_p))
+    hi = g.transform(lambda x: x.quantile(ust_p))
+    return s.clip(lower=lo, upper=hi).to_numpy()
+
+
 def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
                    maliyet_bp: float = 0.0, ufuk_gun: int = 1) -> dict:
@@ -284,6 +309,11 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
         "getiri": round(float(net.mean()), 6),
         "brut": round(float(getiri[ust].mean()), 6),
         "taban": round(float(getiri.mean()), 6),
+        # A mean alone hid a distribution where 1% of rows carried 400% of the
+        # total. The median says what the typical pick did; if the two
+        # disagree badly the average is being carried by a few names.
+        "ortanca": round(float(np.median(net)), 6),
+        "taban_ortanca": round(float(np.median(getiri)), 6),
         "t_nw": None if not np.isfinite(tv) else round(float(tv), 2),
         "gecikme": int(gecikme),
         "maliyet_bp": maliyet_bp,
@@ -820,6 +850,10 @@ def _notlar(sonuc: list) -> list[str]:
                 f"10bp sonrasi %{100*d['getiri']:.3f}, taban "
                 f"%{100*d['taban']:.3f}, t={d['t_nw']}, {d['n']} satir / "
                 f"{d['gun']} gun.")
+            out.append(
+                f"Ufuk {r['ufuk']}: ORTANCA ust dilim %{100*d['ortanca']:.3f} "
+                f"/ taban %{100*d['taban_ortanca']:.3f}. Ortalama ile ortanca "
+                "birbirinden uzaksa getiriyi birkac isim tasiyordur.")
     if not iyi:
         out.append(
             "Model, kova bazli kalibrasyonun uzerine OLCULEBILIR bir sey "
