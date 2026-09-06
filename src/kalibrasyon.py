@@ -668,9 +668,10 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     alt[f"fazla_{ufuk}g"] = g.to_numpy()[var]
                     alt[f"kazanc_{ufuk}g"] = (g.to_numpy()[var] > 0).astype(float)
                     alt.loc[pd.isna(alt[f"fazla_{ufuk}g"]), f"kazanc_{ufuk}g"] = np.nan
-                    b = bariyer.get(ufuk)
-                    if b is not None:
-                        alt[f"bariyer_{ufuk}g"] = b.to_numpy()[var]
+                    for ad in ("bariyer", "bariyertam"):
+                        b = bariyer.get((ad, ufuk))
+                        if b is not None:
+                            alt[f"{ad}_{ufuk}g"] = b.to_numpy()[var]
                 parcalar.append(alt.reset_index(drop=True))
             islenen += 1
         except Exception:
@@ -703,9 +704,9 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         "ozellikler": [c for c in tablo.columns
                        if c not in ("ticker", "tarih", "zaman", "kurulum",
                                     "yon", "frekans")
-                       and not c.startswith(("fazla_", "kazanc_", "bariyer_"))],
+                       and not c.startswith(("fazla_", "kazanc_", "bariyer"))],
         "etiketler": [c for c in tablo.columns
-                      if c.startswith(("fazla_", "kazanc_", "bariyer_"))],
+                      if c.startswith(("fazla_", "kazanc_", "bariyer"))],
         "bariyer_oran": {
             f"{u}g": round(float(tablo[f"bariyer_{u}g"].notna().mean()), 4)
             for u in ufuklar if f"bariyer_{u}g" in tablo.columns},
@@ -720,7 +721,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
 # =============================================================================
 def uc_bariyer(high: pd.Series, low: pd.Series, close: pd.Series,
                atr: pd.Series, ufuk: int, ust_k: float = 1.5,
-               alt_k: float = 1.0) -> pd.Series:
+               alt_k: float = 1.0, dikey_isaret: bool = False) -> pd.Series:
     """Which came first: the target, the stop, or the clock?
 
     The label everywhere else is "was the return positive after exactly N
@@ -739,6 +740,14 @@ def uc_bariyer(high: pd.Series, low: pd.Series, close: pd.Series,
     The default is asymmetric on purpose: a wider target than stop is the shape
     most rules of this kind take, and it means the label isn't a coin flip by
     construction.
+
+    dikey_isaret closes the hole that leaves. With it off, a short horizon only
+    labels the rows where price moved decisively and fast, and a model scored
+    on those rows is being asked an easier question than the one you face live
+    — you can't know in advance whether a trade will resolve quickly. With it
+    on, rows that ran out of clock are labelled by the sign of the return at
+    the vertical barrier, so every row gets an answer and the selection
+    disappears. If an edge only shows up with it off, the edge was selection.
     """
     h = high.to_numpy(float)
     l = low.to_numpy(float)
@@ -760,15 +769,27 @@ def uc_bariyer(high: pd.Series, low: pd.Series, close: pd.Series,
             if l[j] <= alt:
                 out[i] = 0.0
                 break
+        else:
+            if dikey_isaret and son > i:
+                out[i] = 1.0 if c[son] > c[i] else 0.0
     return pd.Series(out, index=close.index)
 
 
 def bariyer_etiketleri(df: pd.DataFrame, ufuklar, ust_k: float = 1.5,
                        alt_k: float = 1.0) -> dict:
-    """Triple-barrier labels for each horizon, keyed by horizon."""
+    """Barrier labels per horizon, in both variants.
+
+    Returns {("bariyer", u): ..., ("bariyertam", u): ...}. The second one
+    labels every row; the first leaves unresolved ones blank. Having both on
+    the same rows is what makes the selection question answerable.
+    """
     from . import indicators as ind
 
     atr = ind.atr(df["High"], df["Low"], df["Close"], 14)
-    return {u: uc_bariyer(df["High"], df["Low"], df["Close"], atr, u,
-                          ust_k, alt_k)
-            for u in ufuklar}
+    out = {}
+    for u in ufuklar:
+        out[("bariyer", u)] = uc_bariyer(df["High"], df["Low"], df["Close"],
+                                         atr, u, ust_k, alt_k, False)
+        out[("bariyertam", u)] = uc_bariyer(df["High"], df["Low"], df["Close"],
+                                            atr, u, ust_k, alt_k, True)
+    return out

@@ -2384,7 +2384,16 @@ def cmd_meta(args: argparse.Namespace) -> int:
     print("=" * 84)
     print(f"META-MODEL — {args.frekans}")
     print("=" * 84)
-    print("  Soru: 'bu kurulum tutacak mi?'  Taban cizgisi: kova kalibrasyonu")
+    print("  Soru: 'bu kurulum tutacak mi?'")
+    if args.dizi:
+        print(f"  Girdi : {args.pencere} barlik gecmis + anlik ozellikler")
+    if args.etiket == "bariyer":
+        print("  Etiket: hedef (1.5 ATR) mi once geldi, stop (1.0 ATR) mi")
+        print("  Taban : kovalar 'endeksi gecti mi' sorusuna gore kalibre;")
+        print("          bu etiket baska bir soru soruyor, o yuzden taban")
+        print("          cizgisi kova degil etiketin kendi oranidir.")
+    else:
+        print("  Taban : kova bazli kalibrasyon")
     print()
 
     d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed,
@@ -2669,9 +2678,11 @@ def main() -> int:
     mp2.add_argument("--pencere", type=int, default=24,
                      help="--dizi ile: kac bar geriye bakilsin")
     mp2.add_argument("--etiket", default="kazanc",
-                     choices=["kazanc", "bariyer"],
+                     choices=["kazanc", "bariyer", "bariyertam"],
                      help="kazanc: N bar sonra endeksi gecti mi - "
-                          "bariyer: hedefe mi once degdi stopa mi")
+                          "bariyer: hedefe mi once degdi stopa mi (cozulmeyen "
+                          "satirlar bos) - bariyertam: ayni ama cozulmeyenler "
+                          "de dikey bariyerdeki isaretle etiketli")
 
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)

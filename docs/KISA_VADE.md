@@ -668,6 +668,85 @@ yaklaştı. Gerçek bir kenar olsaydı tersi olurdu.
 
 ---
 
+## Göstergeleri genişletmek ve etiketi değiştirmek (06.09.2026)
+
+İki ayrı deneme, bilerek ayrı koşuldu.
+
+### 1. Gösterge kütüphanesinin tamamı: 33 → 111 özellik
+
+`indicators.py`'de 24 fonksiyon vardı, dördü kullanılıyordu. Hepsi girdi
+oldu, üstüne 16 mum formasyonu bayrağı ve yapısal özellikler (tepe/dip
+uzaklıkları, üst üste yükselen bar sayısı, sıkışma).
+
+| Ufuk | Brier 33 | Brier 111 | AUC 33 | AUC 111 | t 33 | t 111 |
+|---:|---:|---:|---:|---:|---:|---:|
+| 3b | 0.24969 | 0.24960 | 0.501 | **0.508** | −1.96 | **−0.98** |
+| 7b | 0.24948 | 0.24936 | 0.495 | **0.502** | −0.75 | **−0.21** |
+| 21b | 0.24878 | 0.24824 | 0.491 | **0.498** | −1.70 | **−0.82** |
+
+Üç ölçütte de küçük ama tutarlı bir iyileşme. İlk kez ok sıfırdan uzağa
+gitti. Hiçbiri anlamlılık eşiğini geçmiyor.
+
+Dizi modeli (24 barlık pencere) 111 özellikle de skalerin gerisinde:
+AUC 0.507 / 0.498 / 0.491. Dört varyantta da grafiğin şekli bir şey katmadı.
+
+### 2. Etiketi değiştirmek — ve yakalanan yanlış keşif
+
+Yeni etiket: sinyalden itibaren ileri yürü, `+1.5 ATR` hedefe mi önce değdi
+`−1.0 ATR` stopa mı. Süre dolarsa cevap yok (NaN).
+
+İlk sonuç çarpıcıydı:
+
+| Ufuk | Kapsama | Brier model | Brier sabit | AUC | t |
+|---:|---:|---:|---:|---:|---:|
+| **3b** | **%54** | **0.22789** | 0.22978 | **0.555** | **+3.69** |
+| 7b | %89 | 0.24020 | 0.24010 | 0.511 | +0.16 |
+| 21b | %100 | 0.24230 | 0.24168 | 0.500 | −1.42 |
+
+Güvenilirlik eğrisi de ilk kez gerçekten izliyordu: 28→28, 31→30, 33→33,
+35→35, 40→41, 43→42. Monoton, 15 puanlık aralıkta 1-2 puan sapma.
+
+**Ama kenar, seçilimin en güçlü olduğu yerde çıkıyordu.** 3 barda satırların
+yalnızca %54'ü etiketli — o kadar kısa sürede fiyat hiçbir bariyere değmiyor.
+Model, *hızlı ve kararlı hareket eden* satırlar üzerinde ölçülüyordu. Canlıda
+bir işlemin hızlı çözüleceği önceden bilinemez.
+
+### Kesin test: kapsamayı %100'e çıkar
+
+`bariyertam` etiketi çözülmeyen satırları da dikey bariyerdeki getirinin
+işaretiyle etiketliyor. Aynı satırlar, aynı özellikler, aynı katmanlar — tek
+fark seçilimin kalkması.
+
+| Ufuk | KOŞULLU AUC | KOŞULLU t | **TAM AUC** | **TAM t** |
+|---:|---:|---:|---:|---:|
+| 3b | 0.555 | +3.69 | **0.506** | **+0.53** |
+| 7b | 0.511 | +0.16 | 0.502 | −1.17 |
+| 21b | 0.500 | −1.42 | 0.501 | −1.53 |
+
+**AUC 0.555 → 0.506. Kenar seçilimdi.**
+
+Güvenilirlik eğrisi de çöküyor:
+
+```
+kosullu:  28->28  31->30  33->33  35->35  40->41  43->42
+tam    :  45->46  46->46  46->46  46->46  48->47  49->48
+```
+
+Koşullu ölçümde model 28-43 aralığında konuşup tutturuyordu. Tam ölçümde
+45-49'a sıkışıyor — yani "bilmiyorum" diyor.
+
+### Bu testin kendisi bulgudur
+
+t = +3.69 rapor edilip bırakılsaydı, yanlış bir keşif olurdu. Sayı gerçekti,
+tekrarlanabilirdi, kalibrasyonu düzgündü — ama **sorduğu soru canlıda
+sorulamayacak bir soruydu.**
+
+Kural olarak: bir etiket satırların bir kısmını boş bırakıyorsa, o boşluk
+rastgele değildir. Boş kalanlar sistematik olarak farklı satırlardır ve
+ölçüm o farkı kenar sanabilir.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir

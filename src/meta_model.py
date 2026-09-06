@@ -85,7 +85,7 @@ def panel_yukle(frekans: str = "1d") -> pd.DataFrame | None:
 def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns
             if c not in KIMLIK
-            and not c.startswith(("fazla_", "kazanc_", "bariyer_"))]
+            and not c.startswith(("fazla_", "kazanc_", "bariyer"))]
 
 
 def hazirla(df: pd.DataFrame, ufuk: int,
@@ -642,9 +642,25 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
                     "kosullar": {a: d[bulundu]
                                  for a, d in veri["kosullar"].items()}}
 
-        taban = float((kalib or {}).get("taban", {}).get(str(u), 0.5))
-        r = walk_forward(veri, u, kalib, taban, n_kat=n_kat,
+        # The bucket calibration answers "did it beat the index after N
+        # bars". The barrier label answers a different question and has a
+        # different base rate -- around 40% rather than 48%, because the stop
+        # sits closer than the target. Scoring it against buckets built for
+        # the other question would flatter the model: the baseline would be
+        # aiming at the wrong number and losing to anything.
+        #
+        # There are no barrier-calibrated buckets, so for that label both
+        # baselines collapse to the label's own base rate, and the comparison
+        # is honestly model-vs-constant.
+        if etiket == "kazanc":
+            taban = float((kalib or {}).get("taban", {}).get(str(u), 0.5))
+            kalib_kul = kalib
+        else:
+            taban = float(np.nanmean(veri["y"]))
+            kalib_kul = None
+        r = walk_forward(veri, u, kalib_kul, taban, n_kat=n_kat,
                          bar_gun=bg, seed=seed, Xd=Xd)
+        r["taban_orani"] = round(taban, 4)
         r["ozellik"] = len(veri["ozellik_adlari"])
         r.setdefault("ufuk", u)
         sonuc.append(r)
@@ -672,7 +688,7 @@ def _notlar(sonuc: list) -> list[str]:
         return ["Hicbir ufukta model olculemedi."]
     iyi = [r for r in calisan if r.get("model_daha_iyi")]
     out.append(
-        f"{len(calisan)} ufuk olculdu, {len(iyi)} tanesinde model kova taban "
+        f"{len(calisan)} ufuk olculdu, {len(iyi)} tanesinde model taban "
         "cizgisini gun bazinda |t|>=2 ile geciyor.")
     if not iyi:
         out.append(
