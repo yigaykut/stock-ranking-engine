@@ -177,6 +177,49 @@ check("too few days is refused",
                             pd.DatetimeIndex(["2025-01-01"] * 500))["ok"])
 
 print()
+print("=" * 72)
+print("6) OVERLAP IS ACCOUNTED FOR")
+print("=" * 72)
+
+# Both of these were wrong in the first full run and both flattered the model,
+# so they get pinned down here.
+
+# The purge between train and test is subtracted in calendar days while the
+# horizon is counted in trading days. 63 trading days is about 91 calendar
+# days; dropping 68 leaves a fortnight of training labels sitting inside the
+# test window, and the leak grows with the horizon.
+import inspect
+
+kaynak = inspect.getsource(mm.walk_forward)
+check("purge converts trading days to calendar days",
+      "7.0 / 5.0" in kaynak or "7 / 5" in kaynak,
+      "arindirma must be wider than the horizon in trading days")
+
+for ufuk, embargo in ((21, 5), (63, 5)):
+    ug = ufuk
+    arindirma = int(np.ceil(ug * 7.0 / 5.0)) + embargo
+    check(f"horizon {ufuk} is purged past its calendar span",
+          arindirma >= ug * 7 / 5,
+          f"{arindirma} calendar days for {ug} trading days")
+
+# A series of overlapping forward returns stays correlated out to the horizon.
+# The textbook lag rule looks at how much data there is, not how it was made,
+# and picks about 4 -- which understates the error bar several-fold.
+rng3 = np.random.default_rng(11)
+gunluk_sok = rng3.normal(0.0004, 0.02, 600)
+# 63-day forward return: each day's value shares 62 days with the next.
+ileri = np.array([gunluk_sok[i:i + 63].sum() for i in range(500)])
+gun2 = pd.DatetimeIndex(pd.date_range("2024-01-01", periods=500))
+sahte_p = np.linspace(0, 1, 500)
+
+genis = mm.dilim_getirisi(sahte_p, ileri, gun2, dilim=2, ufuk_gun=63)
+dar = mm.dilim_getirisi(sahte_p, ileri, gun2, dilim=2, ufuk_gun=1)
+check("the lag follows the horizon", genis["gecikme"] == 63,
+      str(genis["gecikme"]))
+check("overlap widens the error bar", abs(genis["t_nw"]) < abs(dar["t_nw"]),
+      f"t {dar['t_nw']} with lag 1 -> {genis['t_nw']} with lag 63")
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

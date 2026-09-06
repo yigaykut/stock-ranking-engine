@@ -227,7 +227,7 @@ def guvenilirlik(p: np.ndarray, y: np.ndarray, dilim: int = 10) -> list[dict]:
 
 def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
-                   maliyet_bp: float = 0.0) -> dict:
+                   maliyet_bp: float = 0.0, ufuk_gun: int = 1) -> dict:
     """What the top slice actually returned, net of costs.
 
     This is the number that decides whether the model is worth anything.
@@ -243,6 +243,13 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
     The t value is over DAILY means, Newey-West corrected -- signals on the
     same day share one market day, and a per-row t would inflate the sample
     roughly tenfold.
+
+    The lag has to come from the horizon, not from the sample size. Today's
+    63-day forward return and tomorrow's share 62 of their 63 days, so the
+    daily series stays correlated out to about 63 lags. The textbook
+    4*(T/100)^(2/9) rule looks at how much data there is rather than how it
+    was generated and picks 4, which understates the standard error by around
+    a factor of four at that horizon.
     """
     from .faktor_zaman import newey_west_t
 
@@ -258,7 +265,8 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
     gunluk = pd.DataFrame({"gun": tarih[ust], "r": net}).groupby("gun")["r"].mean()
     if len(gunluk) < 5:
         return {"ok": False, "reason": f"{len(gunluk)} gun"}
-    tv, _, _ = newey_west_t(gunluk.to_numpy(), lag=None)
+    tv, _, gecikme = newey_west_t(gunluk.to_numpy(),
+                                  lag=max(1, int(ufuk_gun)))
 
     dilimler = []
     try:
@@ -277,13 +285,15 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
         "brut": round(float(getiri[ust].mean()), 6),
         "taban": round(float(getiri.mean()), 6),
         "t_nw": None if not np.isfinite(tv) else round(float(tv), 2),
+        "gecikme": int(gecikme),
         "maliyet_bp": maliyet_bp,
         "dilimler": dilimler,
     }
 
 
 def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
-                tarih: pd.DatetimeIndex) -> tuple[float, float, int]:
+                tarih: pd.DatetimeIndex,
+                ufuk_gun: int = 1) -> tuple[float, float, int]:
     """Gun bazinda Brier farki -> Newey-West duzeltmeli t.
 
     Neden gun bazinda: ayni gunun satirlari bagimsiz degil. Satir bazinda
@@ -300,7 +310,9 @@ def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
     }).groupby("gun")["fark"].mean()
     if len(d) < 5:
         return float("nan"), float("nan"), len(d)
-    t, _, _ = newey_west_t(d.to_numpy(), lag=None)
+    # Same overlap as the returns: consecutive days score labels that share
+    # almost all of their future window.
+    t, _, _ = newey_west_t(d.to_numpy(), lag=max(1, int(ufuk_gun)))
     return float(d.mean()), float(t), int(len(d))
 
 
@@ -578,8 +590,14 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     if len(gunler) < 40:
         return {"ok": False, "reason": f"yalnizca {len(gunler)} farkli gun"}
 
+    # The horizon is counted in TRADING days; the gap below is subtracted in
+    # CALENDAR days. Those are not the same unit and treating them as one let
+    # roughly a fifth of the training labels reach into the test window -- a
+    # 63-bar horizon is about 91 calendar days, and we were dropping 68. The
+    # leak grew with the horizon, which is exactly the shape the first run
+    # showed: 21 bars looked plausible, 63 bars returned an absurd 10%.
     ufuk_gun = max(1, int(np.ceil(ufuk / max(bar_gun, 1e-9))))
-    arindirma = ufuk_gun + embargo_gun
+    arindirma = int(np.ceil(ufuk_gun * 7.0 / 5.0)) + embargo_gun
 
     parcalar = np.array_split(gunler, n_kat + 1)
     katlar = []
@@ -633,8 +651,9 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     P = np.concatenate(tum_p); B = np.concatenate(tum_b)
     Y = np.concatenate(tum_y); T = pd.DatetimeIndex(np.concatenate(tum_t))
     R = np.concatenate(tum_r)
-    fark, t, n_gun = gunluk_fark(P, B, Y, T)
-    dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c)
+    fark, t, n_gun = gunluk_fark(P, B, Y, T, ufuk_gun=ufuk_gun)
+    dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c,
+                                           ufuk_gun=ufuk_gun)
              for c in maliyetler}
 
     return {
