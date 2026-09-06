@@ -147,6 +147,30 @@ def cek(semboller, period: str = "10y", yenile: bool = False,
             "kisa": kisa, "durduruldu": durduruldu}
 
 
+def endeks(sembol: str = "SPY", period: str = "10y",
+           yenile: bool = False) -> pd.DataFrame | None:
+    """Karsilastirma endeksini ayni yoldan ceker.
+
+    Etiket 'endeksten iyi mi' sorusunu soruyor, yani endeksin gecmisi
+    hisselerinkiyle ayni uzunlukta olmali. Endeks kisa kalirsa etiketsiz
+    satirlar sessizce dusuyor -- gun ici tarafta bir kez tam bu oldu ve
+    satirlarin ucte biri kayboldu.
+
+    Ayri bir onbellek alaninda duruyor (yahoo_bench), cunku onu okuyan taraf
+    bundle degil dogrudan tabloyu bekliyor.
+    """
+    anahtar = f"{sembol}:{period}"
+    if not yenile:
+        hit = _cache.peek("yahoo_bench", anahtar)
+        if hit and hit[0] is not None and len(hit[0]):
+            return hit[0]
+    h = _cerceve(_istek(sembol, period) or {})
+    if h is None or len(h) < EN_AZ_BAR:
+        return None
+    _cache.put("yahoo_bench", anahtar, h)
+    return h
+
+
 def kapsam(semboller, period: str = "10y") -> dict:
     """Onbellekte bu period icin ne kadar gecmis var?"""
     barlar = []

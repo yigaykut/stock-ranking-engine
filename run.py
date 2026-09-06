@@ -2488,6 +2488,13 @@ def cmd_gecmis(args: argparse.Namespace) -> int:
         print(f"      {i:,}/{n:,} · yazildi {yazildi:,} · gecildi {atlanan:,}",
               flush=True)
 
+    # The label is "did it beat the index", so the index needs the same span
+    # as the stocks. Fetch it first: if it is missing the whole run measures
+    # nothing useful.
+    bench = gc.endeks(args.benchmark, period=args.period, yenile=args.yenile)
+    print(f"  endeks {args.benchmark}: "
+          + (f"{len(bench):,} bar" if bench is not None else "YOK"))
+
     d = gc.cek(semboller, period=args.period, yenile=args.yenile,
                bekle=args.bekleme, ilerleme=ilerleme)
     print()
@@ -2867,6 +2874,7 @@ def main() -> int:
     gp.add_argument("--bekleme", type=float, default=0.35,
                     help="istekler arasi saniye")
     gp.add_argument("--limit", type=int, default=None)
+    gp.add_argument("--benchmark", default="SPY")
     gp.add_argument("--yenile", action="store_true",
                     help="onbellekte olani da yeniden indir")
 

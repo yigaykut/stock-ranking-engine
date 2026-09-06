@@ -675,6 +675,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     # be taken over the whole cross-section, and signal rows alone are one or
     # two names at any given timestamp.
     capraz_parcalar: list[pd.DataFrame] = []
+    grup_kod: dict[str, int] = {}
     islenen = hatali = 0
 
     for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
@@ -754,8 +755,13 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
 
             if gruplar and genis is not None and tk in gruplar:
                 sut = [c for c in CAPRAZ_OZELLIKLER if c in genis.columns]
-                cx = pd.DataFrame({"ticker": tk, "grup": gruplar[tk],
-                                   "zaman": _zaman_indeks(df.index)})
+                # Group as a small integer, not a repeated string. Over ten
+                # years this frame is millions of rows and the group label is
+                # identical down every one of a ticker's rows; storing it as
+                # text costs more than every indicator put together.
+                kod = grup_kod.setdefault(gruplar[tk], len(grup_kod))
+                cx = pd.DataFrame({"ticker": tk, "zaman": _zaman_indeks(df.index)})
+                cx["grup"] = np.int16(kod)
                 for c in sut:
                     cx[c] = genis[c].to_numpy()
                 for ufuk, g_ in etiketler.items():
