@@ -163,7 +163,7 @@ bos = mm.dilim_getirisi(rng2.normal(0.5, 0.1, n), getiri, gun, maliyet_bp=10)
 check("no edge when predictions are noise", abs(bos["t_nw"]) < 2,
       str(bos["t_nw"]))
 
-kucuk = 0.0003 * sinyal + rng2.normal(0, 0.02, n)
+kucuk = 0.00012 * sinyal + rng2.normal(0, 0.02, n)
 sifir = mm.dilim_getirisi(tahmin, kucuk, gun, maliyet_bp=0)
 yirmi = mm.dilim_getirisi(tahmin, kucuk, gun, maliyet_bp=20)
 check("a small edge survives at zero cost and dies at 20bp",
@@ -249,6 +249,60 @@ check("only the same day is used for the bounds",
 d2 = mm.dilim_getirisi(tahmin, getiri, gun, maliyet_bp=10)
 check("the median is reported next to the mean",
       "ortanca" in d2 and "taban_ortanca" in d2)
+
+print()
+print("=" * 72)
+print("8) THE TOP SLICE IS PICKED PER DAY")
+print("=" * 72)
+
+# Pooling every test row into one ranking asks "of every signal in three
+# years, which were the best". The answer drifts with the model's score
+# level, so the pooled top decile piles onto a few dates instead of naming
+# each day's best names -- and you can only ever trade the second thing.
+n2 = 6000
+gun4 = pd.DatetimeIndex(np.repeat(pd.date_range("2025-01-01", periods=60), 100))
+skor = rng2.normal(0, 1, n2)
+# A score level that drifts upward over time, on top of a real within-day
+# signal. Pooled selection will chase the drift; per-day selection ignores it.
+kayma = np.linspace(0, 6, n2)
+r2 = 0.003 * skor + rng2.normal(0, 0.02, n2)
+
+gunluk_d = mm.dilim_getirisi(skor + kayma, r2, gun4, gun_bazinda=True)
+havuz_d = mm.dilim_getirisi(skor + kayma, r2, gun4, gun_bazinda=False)
+
+check("per-day selection spreads across every day",
+      gunluk_d["gun"] == 60, str(gunluk_d["gun"]))
+check("pooled selection collapses onto far fewer days",
+      havuz_d["gun"] <= 0.6 * gunluk_d["gun"],
+      f"{havuz_d['gun']} of {gunluk_d['gun']}")
+check("per-day selection recovers the signal the drift buries",
+      gunluk_d["getiri"] > havuz_d["getiri"],
+      f"{100*havuz_d['getiri']:+.3f}% pooled -> "
+      f"{100*gunluk_d['getiri']:+.3f}% per day")
+check("the choice is recorded", gunluk_d["gun_bazinda"] is True
+      and havuz_d["gun_bazinda"] is False)
+
+print()
+print("=" * 72)
+print("9) WITHIN-DAY RANK CORRELATION")
+print("=" * 72)
+
+# Used to stop training when the target is an order rather than a class.
+gun5 = pd.DatetimeIndex(np.repeat(pd.date_range("2025-01-01", periods=40), 50))
+h = rng2.normal(0, 1, 2000)
+check("a perfect ordering scores 1",
+      abs(mm.gunluk_ic(h, h, gun5) - 1.0) < 1e-9)
+check("a reversed ordering scores -1",
+      abs(mm.gunluk_ic(-h, h, gun5) + 1.0) < 1e-9)
+check("noise scores about zero",
+      abs(mm.gunluk_ic(rng2.normal(0, 1, 2000), h, gun5)) < 0.1)
+
+# A day-level offset must not count as skill: shifting whole days up or down
+# leaves every within-day order untouched.
+gun_kaymasi = pd.Series(np.arange(2000) // 50).to_numpy() * 3.0
+check("a day-level offset changes nothing",
+      abs(mm.gunluk_ic(h + gun_kaymasi, h, gun5) - 1.0) < 1e-9,
+      "pooled correlation would be dominated by the offset")
 
 print()
 if fails:

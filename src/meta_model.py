@@ -90,7 +90,8 @@ def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
 
 
 def hazirla(df: pd.DataFrame, ufuk: int,
-            etiket_tipi: str = "kazanc", karistir: int = 0) -> dict | None:
+            etiket_tipi: str = "kazanc", karistir: int = 0,
+            siralama: bool = False) -> dict | None:
     """Bir ufuk icin X, y, tarih ve kova taban olasiligi.
 
     Kategorik sutunlar (kurulum, oynaklik, likidite, trend_konumu) one-hot
@@ -154,9 +155,20 @@ def hazirla(df: pd.DataFrame, ufuk: int,
             ham_y[idx] = ham_y[yeni]
             getiri[idx] = getiri[yeni]
 
+    # The metric asks which stocks to pick today, so the training target can
+    # answer that question directly: where this row's return sits among the
+    # other signals that fired the same day. A 0/1 label throws the margin
+    # away and treats a stock that barely won like one that ran away.
+    y_egitim = ham_y.astype(np.float32)
+    if siralama and getiri_ad:
+        gunler = pd.DatetimeIndex(alt["tarih"]).normalize().to_numpy()
+        y_egitim = (pd.Series(getiri).groupby(gunler).rank(pct=True)
+                    .to_numpy().astype(np.float32))
+
     return {
         "X": XX.to_numpy(dtype=np.float32),
         "y": ham_y.astype(np.float32),
+        "y_egitim": y_egitim,
         "tarih": pd.DatetimeIndex(alt["tarih"]).normalize(),
         "zaman": zaman,
         "ticker": alt["ticker"].to_numpy(),
@@ -267,7 +279,8 @@ def _budanmis(getiri: np.ndarray, gun: pd.DatetimeIndex,
 
 def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
-                   maliyet_bp: float = 0.0, ufuk_gun: int = 1) -> dict:
+                   maliyet_bp: float = 0.0, ufuk_gun: int = 1,
+                   gun_bazinda: bool = True) -> dict:
     """What the top slice actually returned, net of costs.
 
     This is the number that decides whether the model is worth anything.
@@ -296,8 +309,18 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
     n = len(p)
     if n < 100:
         return {"ok": False, "reason": f"{n} satir"}
-    esik = np.quantile(p, 1.0 - 1.0 / dilim)
-    ust = p >= esik
+
+    # Pick the top slice WITHIN each day, not across the pooled test set.
+    # Pooling asks "of every signal in three years, which were the best",
+    # and the answer drifts with the model's score level -- folds and market
+    # regimes shift it, so the pooled top decile piles onto a handful of
+    # dates instead of naming today's best stocks. Per day is both the
+    # question you actually act on and a fairer one.
+    if gun_bazinda:
+        sira = pd.Series(p).groupby(np.asarray(tarih)).rank(pct=True).to_numpy()
+        ust = sira > 1.0 - 1.0 / dilim
+    else:
+        ust = p >= np.quantile(p, 1.0 - 1.0 / dilim)
     if ust.sum() < 50:
         return {"ok": False, "reason": "ust dilim cok kucuk"}
 
@@ -310,7 +333,12 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
 
     dilimler = []
     try:
-        kova = pd.qcut(p, dilim, labels=False, duplicates="drop")
+        if gun_bazinda:
+            kova = np.floor(
+                pd.Series(p).groupby(np.asarray(tarih)).rank(pct=True)
+                .to_numpy() * dilim * (1 - 1e-9)).astype(int)
+        else:
+            kova = pd.qcut(p, dilim, labels=False, duplicates="drop")
         for k, g in pd.DataFrame({"k": kova, "r": getiri}).groupby("k"):
             dilimler.append({"dilim": int(k), "n": int(len(g)),
                              "getiri": round(float(g["r"].mean()), 6)})
@@ -331,6 +359,7 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
         "taban_ortanca": round(float(np.median(getiri)), 6),
         "t_nw": None if not np.isfinite(tv) else round(float(tv), 2),
         "gecikme": int(gecikme),
+        "gun_bazinda": bool(gun_bazinda),
         "maliyet_bp": maliyet_bp,
         "dilimler": dilimler,
     }
@@ -364,6 +393,24 @@ def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
 # =============================================================================
 #  Model
 # =============================================================================
+def gunluk_ic(p: np.ndarray, hedef: np.ndarray, gun) -> float:
+    """Average within-day rank correlation between prediction and target.
+
+    Pooling every row into one correlation would mostly measure whether the
+    model can tell a calm month from a violent one, which is not the job.
+    Ranking inside the day is the job.
+    """
+    if gun is None:
+        s = pd.DataFrame({"p": p, "h": hedef})
+        return float(s["p"].corr(s["h"], method="spearman"))
+    d = pd.DataFrame({"p": p, "h": hedef, "g": np.asarray(gun)})
+    ic = d.groupby("g")[["p", "h"]].apply(
+        lambda x: x["p"].corr(x["h"], method="spearman")
+        if len(x) >= 5 else np.nan)
+    ic = ic[np.isfinite(ic)]
+    return float(ic.mean()) if len(ic) else float("nan")
+
+
 def _dogrulama_bol(tarih, pay: float = 0.15):
     """Split training rows by time: the last slice is held out.
 
@@ -419,7 +466,8 @@ def _uygula(p: "np.ndarray", kal: tuple | None) -> "np.ndarray":
 
 def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
           gizli: int = 128, lr: float = 2e-3, tarih=None,
-          sabir: int = 15) -> "object | None":
+          sabir: int = 15, y_skor: "np.ndarray | None" = None
+          ) -> "object | None":
     """Small MLP with a logistic output. Table in, 0/1 out.
 
     Deliberately small: with a noisy target a big net memorises instead of
@@ -429,6 +477,13 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
     running a fixed number of epochs, and the output gets rescaled on that
     same tail. Without either, the model just keeps fitting noise and its
     confidence drifts away from anything real.
+
+    `y` is what the loss is fitted to and `y_skor` is the 0/1 label used for
+    early stopping and for the final rescaling. They differ when the target is
+    a within-day rank: BCE takes a soft target in [0, 1] perfectly well, and
+    fitting the rank teaches the model to order the cross-section, which is
+    the thing being measured. Calibration is still fitted against the real
+    label so the reported probabilities keep meaning something.
     """
     from . import models as mz
 
@@ -438,11 +493,19 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
     import torch.nn as nn
 
     mz._tohumla(seed)
+    if y_skor is None:
+        y_skor = y
+    # A soft target means we are fitting an order, so stop on how well that
+    # order holds up rather than on Brier. Brier rewards being calibrated
+    # about the middle of the distribution, and the middle is exactly the part
+    # nobody trades.
+    yumusak = bool(set(np.unique(y[np.isfinite(y)]).tolist()) - {0.0, 1.0})
     mu, sd = X.mean(0), X.std(0)
     sd[sd < 1e-9] = 1.0
     Z = (X - mu) / sd
 
     tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
+    gun_val = (np.asarray(tarih)[val] if tarih is not None else None)
 
     # Three layers rather than two, and wider. Capacity on its own doesn't
     # find signal that isn't there -- it finds more ways to memorise the
@@ -479,8 +542,10 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
         net.eval()
         with torch.no_grad():
             pv = torch.sigmoid(net(Xt[val]).squeeze(-1)).numpy()
-        skor = brier(pv, y[val])
-        if skor < en_iyi_skor - 1e-6:
+        # Both are "smaller is better", so the IC gets negated.
+        skor = (-gunluk_ic(pv, y[val], gun_val) if yumusak
+                else brier(pv, y_skor[val]))
+        if np.isfinite(skor) and skor < en_iyi_skor - 1e-6:
             en_iyi_skor, bekleme = skor, 0
             en_iyi = {k: v.detach().clone() for k, v in net.state_dict().items()}
         else:
@@ -496,13 +561,14 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
     if val.any():
         with torch.no_grad():
             pv = torch.sigmoid(net(Xt[val]).squeeze(-1)).numpy()
-        kal = _platt(pv, y[val])
+        kal = _platt(pv, y_skor[val])
     return {"net": net, "mu": mu, "sd": sd, "kal": kal}
 
 
 def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
                epochs: int = 120, gizli: int = 128, lr: float = 2e-3,
-               tarih=None, sabir: int = 12):
+               tarih=None, sabir: int = 12,
+               y_skor: "np.ndarray | None" = None):
     """Same job as _egit, but it also reads the bars before the signal.
 
     A small 1-D conv runs over the window and gets pooled down to a vector,
@@ -518,6 +584,9 @@ def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
     import torch.nn as nn
 
     mz._tohumla(seed)
+    if y_skor is None:
+        y_skor = y
+    yumusak = bool(set(np.unique(y[np.isfinite(y)]).tolist()) - {0.0, 1.0})
     mu, sd = Xs.mean(0), Xs.std(0)
     sd[sd < 1e-9] = 1.0
     Zs = (Xs - mu) / sd
@@ -558,6 +627,7 @@ def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
     yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
 
     tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
+    gun_val = (np.asarray(tarih)[val] if tarih is not None else None)
     rng = np.random.default_rng(seed)
     idx_tr = np.flatnonzero(tr)
     n = len(idx_tr)
@@ -578,8 +648,9 @@ def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
         with torch.no_grad():
             pv = torch.sigmoid(
                 net(Dt[val], St[val]).squeeze(-1)).numpy()
-        skor = brier(pv, y[val])
-        if skor < en_iyi_skor - 1e-6:
+        skor = (-gunluk_ic(pv, y[val], gun_val) if yumusak
+                else brier(pv, y_skor[val]))
+        if np.isfinite(skor) and skor < en_iyi_skor - 1e-6:
             en_iyi_skor, bekleme = skor, 0
             en_iyi = {k: v.detach().clone() for k, v in net.state_dict().items()}
         else:
@@ -595,7 +666,7 @@ def _egit_dizi(Xs: np.ndarray, Xd: np.ndarray, y: np.ndarray, seed: int = 7,
     if val.any():
         with torch.no_grad():
             pv = torch.sigmoid(net(Dt[val], St[val]).squeeze(-1)).numpy()
-        kal = _platt(pv, y[val])
+        kal = _platt(pv, y_skor[val])
     return {"net": net, "mu": mu, "sd": sd, "dmu": dmu, "dsd": dsd,
             "kal": kal, "dizi": True}
 
@@ -624,7 +695,8 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                  bar_gun: float = 1.0, seed: int = 7,
                  Xd: "np.ndarray | None" = None,
                  maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
-                 gizli: int = 128, devir: int = 200, sabir: int = 15) -> dict:
+                 gizli: int = 128, devir: int = 200, sabir: int = 15,
+                 tohum_sayisi: int = 1, gunluk_dilim: bool = True) -> dict:
     """Zaman sirali katmanlar; arindirma + tampon ile.
 
     Her katmanda: o katmandan ONCEKI gunlerle egit, katmanin kendisinde olc.
@@ -657,20 +729,35 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
             continue
 
         egitim_tarih = veri["tarih"][egitim_maske]
-        if Xd is not None:
-            model = _egit_dizi(veri["X"][egitim_maske], Xd[egitim_maske],
-                               veri["y"][egitim_maske], seed=seed,
-                               tarih=egitim_tarih, gizli=gizli,
-                               epochs=max(40, devir // 2), sabir=sabir)
-        else:
-            model = _egit(veri["X"][egitim_maske], veri["y"][egitim_maske],
-                          seed=seed, tarih=egitim_tarih, gizli=gizli,
-                          epochs=devir, sabir=sabir)
-        if model is None:
-            return {"ok": False, "reason": "torch yok"}
+        y_egit = veri.get("y_egitim", veri["y"])[egitim_maske]
 
-        p = _tahmin(model, veri["X"][test_maske],
-                    Xd[test_maske] if Xd is not None else None)
+        # Train the same architecture several times and average. A net on a
+        # target this noisy lands somewhere different for every seed, and the
+        # spread between seeds is comparable to the edge we're chasing --
+        # which is how the attention model won an earlier comparison purely
+        # by drawing a good one. Averaging cancels the part that is seed and
+        # keeps the part that is data. It buys nothing in expectation if the
+        # model is learning nothing.
+        modeller = []
+        for i in range(max(1, tohum_sayisi)):
+            if Xd is not None:
+                mm_ = _egit_dizi(veri["X"][egitim_maske], Xd[egitim_maske],
+                                 y_egit, seed=seed + i,
+                                 tarih=egitim_tarih, gizli=gizli,
+                                 epochs=max(40, devir // 2), sabir=sabir,
+                                 y_skor=veri["y"][egitim_maske])
+            else:
+                mm_ = _egit(veri["X"][egitim_maske], y_egit,
+                            seed=seed + i, tarih=egitim_tarih, gizli=gizli,
+                            epochs=devir, sabir=sabir,
+                            y_skor=veri["y"][egitim_maske])
+            if mm_ is None:
+                return {"ok": False, "reason": "torch yok"}
+            modeller.append(mm_)
+
+        Xd_test = Xd[test_maske] if Xd is not None else None
+        p = np.mean([_tahmin(md, veri["X"][test_maske], Xd_test)
+                     for md in modeller], axis=0)
         y = veri["y"][test_maske]
         b = kova_olasiligi(kalib, veri["kurulum"][test_maske], ufuk,
                            {a: d[test_maske] for a, d in veri["kosullar"].items()},
@@ -680,6 +767,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
             "egitim": int(egitim_maske.sum()),
             "test": int(test_maske.sum()),
             "test_gun": int(len(test_gun)),
+            "tohum": len(modeller),
             "brier_model": round(brier(p, y), 5),
             "brier_kova": round(brier(b, y), 5),
             "brier_taban": round(brier(np.full(len(y), taban), y), 5),
@@ -698,7 +786,8 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     R = np.concatenate(tum_r)
     fark, t, n_gun = gunluk_fark(P, B, Y, T, ufuk_gun=ufuk_gun)
     dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c,
-                                           ufuk_gun=ufuk_gun)
+                                           ufuk_gun=ufuk_gun,
+                                           gun_bazinda=gunluk_dilim)
              for c in maliyetler}
 
     return {
@@ -750,7 +839,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              pencere: int = 24, etiket: str = "kazanc",
              maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
              gizli: int = 128, devir: int = 200, sabir: int = 15,
-             karistir: int = 0) -> dict:
+             karistir: int = 0, tohum_sayisi: int = 1,
+             siralama: bool = False, gunluk_dilim: bool = True) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -776,7 +866,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     sonuc = []
     pencere_ozet = None
     for u in ufuklar:
-        veri = hazirla(df, u, etiket, karistir=karistir)
+        veri = hazirla(df, u, etiket, karistir=karistir,
+                       siralama=siralama)
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
@@ -801,6 +892,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
                 continue
             Xd = Xd[bulundu]
             veri = {**veri, "X": veri["X"][bulundu], "y": veri["y"][bulundu],
+                    "y_egitim": veri["y_egitim"][bulundu],
+                    "getiri": veri["getiri"][bulundu],
                     "tarih": veri["tarih"][bulundu],
                     "kurulum": veri["kurulum"][bulundu],
                     "kosullar": {a: d[bulundu]
@@ -825,7 +918,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         r = walk_forward(veri, u, kalib_kul, taban, n_kat=n_kat,
                          bar_gun=bg, seed=seed, Xd=Xd,
                          maliyetler=maliyetler, gizli=gizli, devir=devir,
-                         sabir=sabir)
+                         sabir=sabir, tohum_sayisi=tohum_sayisi,
+                         gunluk_dilim=gunluk_dilim)
         r["getiri_ad"] = veri.get("getiri_ad")
         r["taban_orani"] = round(taban, 4)
         r["ozellik"] = len(veri["ozellik_adlari"])
@@ -841,7 +935,9 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "ufuklar": list(ufuklar),
         "etiket": etiket,
         "karistir": int(karistir),
-        "model": {"gizli": gizli, "devir": devir, "sabir": sabir},
+        "model": {"gizli": gizli, "devir": devir, "sabir": sabir,
+                  "tohum_sayisi": tohum_sayisi, "siralama": bool(siralama),
+                  "gunluk_dilim": bool(gunluk_dilim)},
         "dizi": bool(dizi),
         "pencere": pencere if dizi else None,
         "pencere_ozet": pencere_ozet,

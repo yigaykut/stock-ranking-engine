@@ -2479,7 +2479,9 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     n_kat=args.kat, seed=args.seed,
                     dizi=args.dizi, pencere=args.pencere, etiket=args.etiket,
                     maliyetler=maliyetler, gizli=args.gizli, devir=args.devir,
-                    sabir=args.sabir, karistir=args.karistir)
+                    sabir=args.sabir, karistir=args.karistir,
+                    tohum_sayisi=args.tohum_sayisi, siralama=args.siralama,
+                    gunluk_dilim=not args.havuz_dilim)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2794,6 +2796,14 @@ def main() -> int:
                      help="NULL KONTROL: etiketi gun icinde karistirip ayni "
                           "olcumu tekrarla. Kenar burada da cikiyorsa kenar "
                           "veride degil olcumdedir.")
+    mp2.add_argument("--tohum-sayisi", type=int, default=1,
+                     dest="tohum_sayisi",
+                     help="kac farkli tohumla egitip ortalamasini alsin")
+    mp2.add_argument("--siralama", action="store_true",
+                     help="egitim hedefi 0/1 yerine gun ici yuzdelik sira")
+    mp2.add_argument("--havuz-dilim", action="store_true", dest="havuz_dilim",
+                     help="ust dilimi gun bazinda degil, tum test kumesinden "
+                          "sec (eski davranis)")
     mp2.add_argument("--sabir", type=int, default=15,
                      help="dogrulama iyilesmeden kac devir beklensin")
     mp2.add_argument("--dizi", action="store_true",
