@@ -2450,6 +2450,63 @@ def maliyet_basliklari(d: dict) -> list:
     return []
 
 
+def cmd_gecmis(args: argparse.Namespace) -> int:
+    """Uzun gunluk gecmis: indir veya ne oldugunu goster."""
+    from src import gecmis as gc
+
+    try:
+        evren, _ = universe.build(["smallcap", "midcap", "wsb"])
+    except Exception as exc:
+        print(f"HATA: evren kurulamadi ({exc})", file=sys.stderr)
+        return 1
+    semboller = list(evren)
+    if args.limit:
+        semboller = semboller[:args.limit]
+
+    print("=" * 78)
+    print(f"GUNLUK GECMIS — {args.period}")
+    print("=" * 78)
+
+    if args.gecmis_action == "kapsam":
+        k = gc.kapsam(semboller, period=args.period)
+        if not k.get("ok"):
+            print(f"  Onbellekte '{args.period}' anahtariyla bar yok.")
+            print(f"  Indirmek icin: python run.py gecmis cek "
+                  f"--period {args.period}")
+            return 0
+        print(f"  {k['hisse']:,} hisse · {k['ilk']} .. {k['son']}")
+        print(f"  bar: ortanca {k['bar_ortanca']:,}, en az {k['bar_en_az']:,}, "
+              f"en cok {k['bar_en_cok']:,}")
+        print(f"  evrenin {100 * k['hisse'] / max(len(semboller), 1):.0f}%'i")
+        return 0
+
+    print(f"  {len(semboller):,} sembol taranacak, istekler arasi "
+          f"~{args.bekleme:.2f}s")
+    print()
+
+    def ilerleme(i, n, yazildi, atlanan):
+        print(f"      {i:,}/{n:,} · yazildi {yazildi:,} · gecildi {atlanan:,}",
+              flush=True)
+
+    d = gc.cek(semboller, period=args.period, yenile=args.yenile,
+               bekle=args.bekleme, ilerleme=ilerleme)
+    print()
+    print(f"  istenen {d['istenen']:,} · onbellekte olan {d['atlandi']:,} · "
+          f"yazilan {d['yazildi']:,}")
+    print(f"  hatali {d['hatali']:,} · gecmisi kisa {d['kisa']:,}")
+    if d.get("durduruldu"):
+        print(f"  DURDURULDU — {d['durduruldu']}")
+        print("  Tekrar calistirildiginda kaldigi yerden devam eder.")
+    k = gc.kapsam(semboller, period=args.period)
+    if k.get("ok"):
+        print(f"  Onbellek: {k['hisse']:,} hisse · {k['ilk']} .. {k['son']} · "
+              f"ortanca {k['bar_ortanca']:,} bar")
+    print()
+    print(f"  Panel: python run.py kisa panel --frekans 1d "
+          f"--period {args.period} --ufuklar 21")
+    return 0
+
+
 def cmd_meta(args: argparse.Namespace) -> int:
     """Meta-model: kurulum tutacak mi?
 
@@ -2458,11 +2515,6 @@ def cmd_meta(args: argparse.Namespace) -> int:
     """
     from src import meta_model as mm
 
-    ev = d.get("evren")
-    if ev:
-        print(f"  Evren : gunluk dolar hacim >= {ev['min_hacim']:,.0f} — "
-              f"{ev['once']:,} satirdan {ev['sonra']:,} kaldi "
-              f"({ev['hisse']:,} hisse)")
     print("=" * 84)
     print(f"META-MODEL — {args.frekans}")
     print("=" * 84)
@@ -2514,6 +2566,12 @@ def cmd_meta(args: argparse.Namespace) -> int:
               f"{r['auc_kova']:>7.3f}"
               f"{(f'{t:+.2f}' if t is not None else '-'):>7}  {karar}")
     print()
+    ev = d.get("evren")
+    if ev:
+        print(f"  Evren : gunluk dolar hacim >= {ev['min_hacim']:,.0f} — "
+              f"{ev['once']:,} satirdan {ev['sonra']:,} kaldi "
+              f"({ev['hisse']:,} hisse)")
+        print()
     print("  UST DILIM GETIRISI (model en yuksek %10, maliyet dusulmus)")
     print(f"  {'UFUK':>5}{'N':>8}{'GUN':>6}{'TABAN':>9}"
           + "".join(f"{k:>11}" for k in maliyet_basliklari(d))
@@ -2798,6 +2856,20 @@ def main() -> int:
                     help="istekler arasi saniye (hiz siniri icin)")
     ip.add_argument("--no-cache", action="store_true")
 
+    gp = sub.add_parser("gecmis", aliases=["bargecmis"],
+                        help="uzun gunluk gecmisi indir (2 yil yerine 10)")
+    gp.add_argument("gecmis_action", nargs="?", default="kapsam",
+                    choices=["kapsam", "cek"],
+                    help="kapsam: onbellekte ne var - cek: indir")
+    gp.add_argument("--period", default="10y",
+                    help="yahoo araligi (5y, 10y, max). Onbellek anahtari "
+                         "budur; panel ayni --period ile okur.")
+    gp.add_argument("--bekleme", type=float, default=0.35,
+                    help="istekler arasi saniye")
+    gp.add_argument("--limit", type=int, default=None)
+    gp.add_argument("--yenile", action="store_true",
+                    help="onbellekte olani da yeniden indir")
+
     mp2 = sub.add_parser("meta", help="meta-model: kurulum tutacak mi? "
                                       "(taban cizgisi kova kalibrasyonu)")
     mp2.add_argument("--frekans", default="1h",
@@ -2884,6 +2956,8 @@ def main() -> int:
         return cmd_learn(args)
     if args.cmd == "meta":
         return cmd_meta(args)
+    if args.cmd in ("gecmis", "bargecmis"):
+        return cmd_gecmis(args)
     if args.cmd in ("intraday", "gunici"):
         return cmd_intraday(args)
     if args.cmd in ("havuz", "pool"):
