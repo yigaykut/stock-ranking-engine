@@ -830,6 +830,49 @@ in order and AUC is 0.531, but the median pick still loses slightly to its
 peers, so the average is carried by the right tail. At 63 days the t is highest
 and the result is weakest — AUC 0.508 and the deciles aren't monotone.
 
+### What ten years of data said about it
+
+Everything above came out of 501 daily bars. At a 21-day horizon that is about
+24 non-overlapping periods, and the only way to find out how much a t of 2.25
+moves on that few is to go and get more history.
+
+Getting it meant leaving yfinance behind. As of 6 September its price paths all
+fail in its own cookie handling, while Yahoo's chart endpoint answers a plain
+HTTP request perfectly well, so `src/gecmis.py` talks to the endpoint directly
+and does the split adjustment itself. On AAPL, MSFT and NVDA the result matches
+the existing two-year cache to the last digit across all 501 overlapping bars.
+That gave 2,616 stocks over ten years: 1.87M panel rows across 2,494 trading
+days, against 384k rows across 487.
+
+The configuration was held identical so that the only thing changing was the
+data. Top decile, net of 10bp:
+
+| Universe | Data | Days | Net return | t | AUC |
+|---|---|---:|---:|---:|---:|
+| All | 2 years | 372 | +0.864% | **+2.25** | 0.523 |
+| All | 10 years | 1,978 | **+0.093%** | **−0.75** | 0.514 |
+| ≥$5M/day | 2 years | 278 | −0.484% | −0.79 | 0.516 |
+| ≥$5M/day | 10 years | 1,977 | **−0.671%** | −4.09 | 0.513 |
+
+In the liquid universe over ten years the deciles are flat end to end — −0.57,
+−0.81, −0.73, −0.81, −0.70, −0.59, −0.61, −0.56, −0.54, −0.57. There is no
+ordering there at all.
+
+So the answer for 21 days is no: in a universe you could actually trade, these
+features carry no measurable edge, and the two-year result was a small sample
+plus a tilt toward illiquid names. Two details worth keeping: AUC sits a hair
+above 0.50 and stays there across 1,977 days, which is probably real but far
+too small to survive costs; and the base rate itself is −0.65%, meaning these
+twelve setups are a mildly negative signal in liquid stocks, so the model's job
+was to pick the least bad rather than the good.
+
+Every measurement this week moved the same direction. Daily buckets +0.030,
+hourly +0.002. Barrier label at 54% coverage AUC 0.555, at full coverage 0.506.
+Peer label pooled +0.655%, per day +0.810%, with a rank objective +0.864%, with
+a liquidity floor −0.484%, over ten years −0.671%. Each time the thing making
+the number bigger turned out to be a selection effect, a leak, or too little
+data.
+
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
 ---

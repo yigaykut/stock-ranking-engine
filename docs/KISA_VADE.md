@@ -928,6 +928,101 @@ birlikte güçlü bir dolaylı kanıt oluşturuyor, o kadar.
 
 ---
 
+## On yıllık veri — ve 21 günün cevabı (07.09.2026)
+
+Önceki bölümdeki bütün ölçümler 501 günlük bardan çıktı. 21 günlük ufukta bu,
+örtüşmeyen yaklaşık 24 dönem demek. t=2.25 gibi bir değerin bu kadar az
+bağımsız dönem üzerinde ne kadar oynak olduğunu görmenin tek yolu daha uzun
+bir geçmişti.
+
+### Veriyi getirmek — yfinance devre dışı
+
+06.09.2026 itibarıyla yfinance 1.0'ın bütün fiyat yolları (`yf.download` da,
+`Ticker.history` de) `'NoneType' object is not subscriptable` ile düşüyor;
+kütüphanenin çerez/crumb adımı `None` dönüyor. Aynı anda Yahoo'nun chart ucu
+düz bir HTTP isteğine sorunsuz cevap veriyor — yani engellenmiş değiliz,
+arızalı olan aradaki kütüphane. `src/gecmis.py` o yüzden uca doğrudan
+bağlanıyor.
+
+Doğrudan bağlanmak bölünme düzeltmesini de bize bırakıyor ve asıl sessiz
+bozulma riski orada: Yahoo ham OHLC'yi düzeltmeden verip `adjclose`'u ayrı
+koyuyor, düzeltilmemiş bir 2'ye 1 bölünme ise göstergelerin gerçek sandığı
+%50'lik bir çöküş oluyor. Dört fiyat sütunu da `adjclose/close` oranıyla
+ölçekleniyor, hacme dokunulmuyor. AAPL, MSFT ve NVDA'da örtüşen 501 barın
+tamamı mevcut iki yıllık önbellekle **son hanesine kadar** aynı çıktı.
+
+Sonuç: **2.616 hisse × 10 yıl** (2016-09-06 → 2026-09-04), ortanca 2.514 bar.
+Panel 384.004 satırdan **1.872.659** satıra, 487 günden **2.494** güne çıktı.
+
+### Sonuç: 2 yılda görünen şey 10 yılda yok
+
+Yapılandırma birebir aynı tutuldu (5 tohum, sıralama hedefi, gün bazında
+dilim, 4 katman) — değişen tek şey veri.
+
+**Tüm evren:**
+
+| Veri | Satır | Gün | Üst dilim (10bp) | t | Medyan | AUC | DV eğilimi |
+|---|---:|---:|---:|---:|---:|---:|---:|
+| 2 yıl | 24.820 | 372 | +0.864% | **+2.25** | −0.267% | 0.523 | 0.368 |
+| 10 yıl | 118.978 | **1.978** | **+0.093%** | **−0.75** | −0.185% | 0.514 | 0.189 |
+
+**Likit evren (≥ $5M/gün):**
+
+| Veri | Satır | Gün | Üst dilim (10bp) | t | Medyan | AUC |
+|---|---:|---:|---:|---:|---:|---:|
+| 2 yıl | 15.426 | 278 | −0.484% | −0.79 | −1.072% | 0.516 |
+| 10 yıl | 72.737 | **1.977** | **−0.671%** | −4.09 | −0.699% | 0.513 |
+
+10 yıllık likit evrende dilimler tamamen düz:
+
+```
+-0.57  -0.81  -0.73  -0.81  -0.70  -0.59  -0.61  -0.56  -0.54  -0.57
+```
+
+En düşük dilimle en yüksek dilim arasında fark yok. Sıralama diye bir şey yok.
+
+### Ne öğrendik
+
+**21 günde, bu özelliklerden, işlem yapılabilir bir evrende ölçülebilir bir
+kenar çıkmıyor.** İki yılda görünen t=2.25, beş kat veriyle t=−0.75'e döndü.
+Bu, modelin kötü ayarlanmış olmasından değil; iki yılda 24 bağımsız dönem
+üzerinde hesaplanan bir t değerinin bu kadar oynak olmasından.
+
+İki küçük ayrıntı dürüstlük adına:
+
+- **AUC 0.50'nin bir tık üstünde ve orada kalıyor** (0.514 / 0.513). 1977 gün
+  üzerinde bu muhtemelen şanstan ayırt edilebilir. Yani modelin cılız bir
+  sıralama gücü *var*; ama maliyet ve negatif taban oranını aşmaya yetmiyor.
+  "Hiçbir şey öğrenmedi" ile "işe yarar bir şey öğrendi" arasında bir yerde,
+  ve karar açısından ikincisi değil.
+- **Sinyal satırları akranlarına kaybediyor.** Likit evrende taban −%0.649.
+  Yani bu 12 kurulum, likit isimlerde ortalamada negatif bir işaret. Modelin
+  işi iyi olanı seçmek değil, en az kötü olanı seçmekmiş — ve onu da
+  yapamıyor.
+
+### Bu oturumun deseni
+
+Her ölçüm keskinleştikçe sonuç sıfıra doğru gitti; hiçbiri istisna olmadı.
+
+| Ölçüm | Sonuç |
+|---|---|
+| Günlük kovalar, rsi2 | +0.030 (n_eff 40) |
+| Saatlik kovalar | +0.002 (n_eff 700) |
+| Bariyer etiketi, %54 kapsama | AUC 0.555, t=+3.69 |
+| Aynısı, %100 kapsama | AUC 0.506, t=+0.53 |
+| Akran etiketi, havuzlanmış dilim, 2 yıl | +0.655%, t=+2.52 |
+| Gün bazında dilim | +0.810%, t=+0.77 |
+| + sıralama hedefi | +0.864%, t=+2.25 |
+| Likidite tabanı ≥ $5M | −0.484%, t=−0.79 |
+| 10 yıl, tüm evren | +0.093%, t=−0.75 |
+| 10 yıl, likit | −0.671%, t=−4.09 |
+
+Bu bir başarısızlık listesi değil, bir ölçüm disiplininin çalıştığının kaydı.
+Her satırda kenarı büyüten şey bir seçim yanlılığı, bir sızıntı ya da az
+veriydi; düzeltildiğinde kenar gitti.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
@@ -939,6 +1034,9 @@ birlikte güçlü bir dolaylı kanıt oluşturuyor, o kadar.
   kayma düşülmemiş. İnce likiditede bu fark, ölçülen kenardan büyük olabilir.
 - **Kapanış fiyatından giriş varsayılıyor**: sinyal kapanışta oluşuyor, giriş
   de kapanışta sayılıyor. Gerçekte ertesi açılışa kalır.
+- **Hayatta kalma yanlılığı ölçüldü ama giderilemedi**: kote dışı kalmış
+  hisselerin barları elde yok. Mikro-kap bandındaki fazla getirinin ne
+  kadarının bundan geldiği bilinmiyor; yalnızca yönü ve büyüklüğü belli.
 - **Kuyruk budandı, yok olmadı**: günlük kesit 1/99 yüzdelikte kırpılıyor.
   Bu, ortalamayı birkaç ismin taşımasını engeller ama uç hareketlerin gerçek
   olduğu durumlarda getiriyi de az gösterir. Kırpma eşiği bir tercihtir,
