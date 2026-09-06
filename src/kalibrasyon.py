@@ -676,6 +676,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     # two names at any given timestamp.
     capraz_parcalar: list[pd.DataFrame] = []
     grup_kod: dict[str, int] = {}
+    tk_kod: dict[str, int] = {}
     islenen = hatali = 0
 
     for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
@@ -760,7 +761,13 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 # identical down every one of a ticker's rows; storing it as
                 # text costs more than every indicator put together.
                 kod = grup_kod.setdefault(gruplar[tk], len(grup_kod))
-                cx = pd.DataFrame({"ticker": tk, "zaman": _zaman_indeks(df.index)})
+                # Ticker as a code too, for the same reason: a few million
+                # repeated Python strings cost more than the numbers they sit
+                # next to, and this frame is the largest thing the build
+                # holds. The names come back at merge time.
+                tkod = tk_kod.setdefault(tk, len(tk_kod))
+                cx = pd.DataFrame({"zaman": _zaman_indeks(df.index)})
+                cx["tk"] = np.int32(tkod)
                 cx["grup"] = np.int16(kod)
                 for c in sut:
                     cx[c] = genis[c].to_numpy()
@@ -788,11 +795,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         capraz_parcalar.clear()
         gc.collect()
         uzun = capraz_kesit(uzun, ufuklar)
-        tut = (["ticker", "zaman"]
+        tut = (["tk", "zaman"]
                + [c for c in uzun.columns if c.startswith(("x_", "akran_"))])
         capraz_bilgi = {
             "grup": int(uzun["grup"].nunique()),
-            "hisse": int(uzun["ticker"].nunique()),
+            "hisse": int(uzun["tk"].nunique()),
             "bar": int(len(uzun)),
             "sutun": [c for c in uzun.columns if c.startswith("x_")],
             "etiket": [c for c in uzun.columns if c.startswith("akran_")],
@@ -800,7 +807,9 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         # Drop everything the merge doesn't need before the merge, not after.
         uzun = uzun[tut]
         gc.collect()
-        tablo = tablo.merge(uzun, on=["ticker", "zaman"], how="left")
+        tablo["tk"] = tablo["ticker"].map(tk_kod).astype("Int32")
+        tablo = tablo.merge(uzun, on=["tk", "zaman"], how="left")
+        tablo = tablo.drop(columns=["tk"])
         del uzun
         gc.collect()
     # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
