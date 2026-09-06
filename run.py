@@ -2479,7 +2479,7 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     n_kat=args.kat, seed=args.seed,
                     dizi=args.dizi, pencere=args.pencere, etiket=args.etiket,
                     maliyetler=maliyetler, gizli=args.gizli, devir=args.devir,
-                    sabir=args.sabir)
+                    sabir=args.sabir, karistir=args.karistir)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2790,6 +2790,10 @@ def main() -> int:
                      help="gizli katman genisligi")
     mp2.add_argument("--devir", type=int, default=200,
                      help="en fazla devir; erken durdurma daha once kesebilir")
+    mp2.add_argument("--karistir", type=int, default=0, metavar="TOHUM",
+                     help="NULL KONTROL: etiketi gun icinde karistirip ayni "
+                          "olcumu tekrarla. Kenar burada da cikiyorsa kenar "
+                          "veride degil olcumdedir.")
     mp2.add_argument("--sabir", type=int, default=15,
                      help="dogrulama iyilesmeden kac devir beklensin")
     mp2.add_argument("--dizi", action="store_true",

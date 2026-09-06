@@ -61,10 +61,11 @@ KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
 
 
 def cikti_yolu(frekans: str, dizi: bool = False,
-               etiket: str = "kazanc") -> Path:
+               etiket: str = "kazanc", karistir: int = 0) -> Path:
     ek = "_dizi" if dizi else ""
     et = "" if etiket == "kazanc" else f"_{etiket}"
-    return DATA / f"meta_model_{frekans}{ek}{et}.json"
+    ka = "_karisik" if karistir else ""
+    return DATA / f"meta_model_{frekans}{ek}{et}{ka}.json"
 
 
 # =============================================================================
@@ -89,7 +90,7 @@ def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
 
 
 def hazirla(df: pd.DataFrame, ufuk: int,
-            etiket_tipi: str = "kazanc") -> dict | None:
+            etiket_tipi: str = "kazanc", karistir: int = 0) -> dict | None:
     """Bir ufuk icin X, y, tarih ve kova taban olasiligi.
 
     Kategorik sutunlar (kurulum, oynaklik, likidite, trend_konumu) one-hot
@@ -138,6 +139,20 @@ def hazirla(df: pd.DataFrame, ufuk: int,
     benzersiz = np.unique(ham_y[np.isfinite(ham_y)])
     if not set(benzersiz.tolist()) <= {0.0, 1.0}:
         ham_y = (ham_y > 0).astype(np.float64)
+
+    if karistir:
+        # Null control. Shuffle the label and the return together inside each
+        # day, leaving the features, the dates and the cross-sectional
+        # structure exactly as they are. Any edge that survives this is coming
+        # from the measurement rather than from the data, and after finding two
+        # leaks in one afternoon that is worth being able to check on demand.
+        rng = np.random.default_rng(karistir)
+        gunler = pd.DatetimeIndex(alt["tarih"]).normalize().to_numpy()
+        for g_ in np.unique(gunler):
+            idx = np.flatnonzero(gunler == g_)
+            yeni = rng.permutation(idx)
+            ham_y[idx] = ham_y[yeni]
+            getiri[idx] = getiri[yeni]
 
     return {
         "X": XX.to_numpy(dtype=np.float32),
@@ -734,7 +749,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              n_kat: int = 4, seed: int = 7, dizi: bool = False,
              pencere: int = 24, etiket: str = "kazanc",
              maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0),
-             gizli: int = 128, devir: int = 200, sabir: int = 15) -> dict:
+             gizli: int = 128, devir: int = 200, sabir: int = 15,
+             karistir: int = 0) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -760,7 +776,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     sonuc = []
     pencere_ozet = None
     for u in ufuklar:
-        veri = hazirla(df, u, etiket)
+        veri = hazirla(df, u, etiket, karistir=karistir)
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
@@ -824,6 +840,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
         "etiket": etiket,
+        "karistir": int(karistir),
         "model": {"gizli": gizli, "devir": devir, "sabir": sabir},
         "dizi": bool(dizi),
         "pencere": pencere if dizi else None,
@@ -876,9 +893,13 @@ def _notlar(sonuc: list) -> list[str]:
 
 
 def kaydet(payload: dict, path: Path | None = None) -> Path:
+    # The shuffled run gets its own file. Writing a null control over the real
+    # result would be the same mistake the per-frequency panels already made
+    # once, and this one would be worse: it looks like a result.
     p = path or cikti_yolu(payload.get("frekans", "1d"),
                            bool(payload.get("dizi")),
-                           payload.get("etiket", "kazanc"))
+                           payload.get("etiket", "kazanc"),
+                           int(payload.get("karistir", 0)))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                  encoding="utf-8")

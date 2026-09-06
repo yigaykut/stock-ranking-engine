@@ -747,6 +747,92 @@ rastgele değildir. Boş kalanlar sistematik olarak farklı satırlardır ve
 
 ---
 
+## Akran-göreli ölçüm (06.09.2026)
+
+Buraya kadarki her ölçüm AUC ~0.50 verdi. Sebebi ararken iki yapısal boşluk
+çıktı: kısa vade tarafı çapraz kesiti hiç kullanmıyordu (her özellik hisse
+bazında mutlaktı — "RSI 32", hiçbir yerde "bugün akranlarına göre nerede"
+sorulmuyordu) ve bütün ufuklar 3-21 bardı. Dördü de kapatıldı:
+
+- **Akran grupları** (`havuz.tam_gruplar`): evrenin tamamı sektör × piyasa
+  değeri terzili ile 32 gruba ayrıldı, 2056 sembol, grup başına 21-132 üye.
+- **Çapraz kesitsel özellikler**: 20 göstergenin (grup, zaman) içindeki
+  yüzdelik sırası, `x_` önekiyle.
+- **Akran-arındırılmış etiket**: `akran_Ng = fazla_Ng − (grup × zaman
+  ortalaması)`. Piyasa ve sektör hareketi çıkıyor, idiyosinkratik kısım
+  kalıyor — çapraz kesitsel bir modelin tahmin edebileceği tek parça o.
+- **Uzun ufuklar**: 21 / 42 / 63 gün.
+
+Panel: 384.004 satır, 133 sütun. Model 128 genişlik × 3 katman, en fazla 200
+devir, erken durdurma karar veriyor.
+
+### İlk sonuç yanlıştı — ve neden yanlış olduğu
+
+İlk çalıştırma 63 günde üst dilim için maliyet düşülmüş **%10.4**, t=8.49
+verdi. Planın kendi notu "%1.5 üstü çıkarsa sızıntı ararım" diyordu. Üç ayrı
+sebep vardı ve üçü de aynı yöne, modelin lehine, çalışıyordu.
+
+**1. Arındırma birimi.** Eğitim ile test arasındaki boşluk ufku *işlem günü*
+sayıp *takvim günü* olarak çıkarıyordu. 63 işlem günü ≈ 91 takvim günü,
+atılan 68 gündü; eğitim etiketlerinin yaklaşık iki haftası test penceresinin
+içinde kalıyordu. Boşluk ufukla büyüdüğü için 21 barda makul, 63 barda absürt
+görünüyordu.
+
+**2. Newey-West gecikmesi.** `4·(T/100)^(2/9)` kural-ı kaidesi verinin
+*miktarına* bakar, *üretimine* değil. 63 günlük ileri getiride ardışık iki
+günün 62 günü ortaktır; seri ~63 gecikmeye kadar korelasyonlu, kural ise 4
+seçiyordu. Saf gürültüde bu, t=9.08'i t=2.08 yapıyor — test bunu artık
+kilitliyor. `faktor_zaman`'ın kendi docstring'i bu tuzağı zaten yazıyordu,
+`dilim_getirisi` onu görmezden gelmişti.
+
+**3. Asıl mesele: ortalama uydurmaydı.** İlk ikisi düzeltildikten sonra t
+8.49'dan 3.26'ya indi ama getiri %8.9'da kaldı. Sorun sızıntı değil etiketin
+kendisiydi. `akran_63g`: ortalama +%0.56, **medyan −%2.11**, maksimum +%2479,
+ve satırların en üst %1'i toplamın **%402'sini** taşıyor — yani geri kalan her
+şey negatif. Tipik hisse akranına kaybediyor, artı ortalama bir avuç isimden
+geliyor ve o isimlerin çoğu düzeltilmemiş ters bölünme. Güvenilirlik tablosu
+bunu zaten söylüyordu: üst dilim **%49** isabetle ortalama +%8.9 getiriyordu.
+
+Çözüm: her günün kesiti kendi 1. ve 99. yüzdeliğinde kırpılıyor. Yalnız aynı
+günün verisini kullanır, ileriye bakmaz, ve taban oranını üst dilimle aynı
+kuralla budar. Ortalamanın yanına **medyan** da yazılıyor; ikisi ayrışırsa
+getiriyi birkaç ismin taşıdığı tabloda görünür.
+
+### Düzeltilmiş sonuç
+
+Üst dilim %10, akran-fazla getiri, gün bazında Newey-West t (gecikme = ufuk):
+
+| Ufuk | Taban | 0 bp | 10 bp | 20 bp | t(10bp) | Medyan | AUC |
+|-----:|------:|-----:|------:|------:|--------:|-------:|----:|
+| 21 | −0.170% | +0.755% | **+0.655%** | +0.555% | **+2.52** | +0.457% | 0.528 |
+| 42 | −0.030% | +2.501% | **+2.401%** | +2.301% | **+2.53** | −0.118% | 0.531 |
+| 63 | −0.035% | +4.818% | **+4.718%** | +4.618% | **+3.98** | −0.203% | 0.508 |
+
+Taban medyanları sırasıyla −%0.764, −%1.130, −%1.706. Yani sinyal satırları
+akranlarına ortalamada kaybediyor; modelin işi en az kaybedeni seçmek.
+
+**Null kontrolü.** `--karistir 42` etiketi ve getiriyi gün *içinde*
+karıştırır; özellikler, tarihler ve çapraz kesit yapısı olduğu gibi kalır.
+Sonuç: 3 ufkun **0'ı** geçiyor, üç üst dilim de negatif (−%0.62, −%1.01,
+−%1.18), t −1.26 … −0.24. Ölçüm düzeneği kendi başına kenar üretmiyor.
+
+### Ne iddia edilebilir, ne edilemez
+
+- **21 gün — sağlam.** Hem ortalama hem medyan pozitif, medyan farkı tabana
+  göre +%1.22, t=2.52, AUC 0.528, null kontrolünde temiz.
+- **42 gün — kısmen.** AUC 0.531 ve dilimler tek yönlü (−%2.14 → +%2.50), ama
+  medyan hâlâ −%0.12: tipik seçim akranına az da olsa kaybediyor, ortalamayı
+  sağ kuyruk taşıyor. Tabandan iyi, mutlak olarak pozitif değil.
+- **63 gün — hayır.** t en yüksek olan bu ama AUC 0.508 ve dilimler tek yönlü
+  değil (3. dilim +%2.34, 6. dilim −%2.24). Buradaki +%4.72 sıralama gücü
+  değil, budamadan sonra bile kalan kuyruk.
+
+Üç ufuk denendi; birinde t≥2 çıkması tek başına az şey söyler. Buradaki
+resmi tutan şey ikisinde birden t≈2.5 olması, 42'de dilimlerin tek yönlü
+gitmesi, AUC'nin 0.52'yi geçmesi ve null kontrolünün temiz gelmesi.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
@@ -758,5 +844,13 @@ rastgele değildir. Boş kalanlar sistematik olarak farklı satırlardır ve
   kayma düşülmemiş. İnce likiditede bu fark, ölçülen kenardan büyük olabilir.
 - **Kapanış fiyatından giriş varsayılıyor**: sinyal kapanışta oluşuyor, giriş
   de kapanışta sayılıyor. Gerçekte ertesi açılışa kalır.
+- **Kuyruk budandı, yok olmadı**: günlük kesit 1/99 yüzdelikte kırpılıyor.
+  Bu, ortalamayı birkaç ismin taşımasını engeller ama uç hareketlerin gerçek
+  olduğu durumlarda getiriyi de az gösterir. Kırpma eşiği bir tercihtir,
+  ölçülmüş bir sabit değil.
+- **Düzeltilmemiş bölünmeler**: +%2479 gibi değerler ters bölünme artığı.
+  Budama bunları etkisizleştiriyor ama kaynaktan temizlemiyor.
+- **Üç ufuk denendi**: birinde t≥2 çıkması tek başına çoklu-test karşısında
+  zayıftır. Resmi tutan şey ikisinde birden çıkması ve null kontrolü.
 - **Hiçbir şey otomatik yapılmıyor.** Sistem sinyal üretir ve sayımı gösterir.
   Karar kullanıcınındır ve **bu bir yatırım tavsiyesi değildir.**

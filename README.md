@@ -779,8 +779,56 @@ That's meta-labelling: the pattern provides the primary signal, a second model
 estimates whether that signal will hold. A narrower and far more learnable
 question than "which stock goes up".
 
-The model doesn't exist yet. This is its training set, and the calibration
-already answers the question in the meantime.
+### Ranking stocks against their peers
+
+Every measurement up to this point came back at AUC 0.50, and the reason turned
+out to be structural rather than a matter of tuning. Each short-term feature was
+absolute and per-stock — "RSI is 32" — and nothing anywhere asked where that sat
+relative to comparable companies on the same day. The long-term scorer had used
+cross-sectional ranks from the beginning; the short-term side never had them.
+
+So the universe now gets split into 32 peer groups by sector and size tercile
+(2056 stocks, 21 to 132 per group), twenty indicators are turned into
+within-group percentile ranks, and the label becomes the excess return with the
+group's own move subtracted. What's left is the idiosyncratic part, which is the
+only part a cross-sectional model could predict in the first place. Horizons
+moved out to 21, 42 and 63 days, because the anomalies that survive in the
+literature live at weeks to months rather than days.
+
+The decision metric changed too. Brier score and AUC weigh every row equally,
+and in practice only the rows you would act on matter, so the headline number is
+now what the top decile actually returned after costs.
+
+**The first run of this was wrong in three separate ways**, all of them
+flattering. The gap between training and test counted the horizon in trading
+days and subtracted it in calendar days, so a couple of weeks of training labels
+sat inside the test window. The Newey-West lag came from the textbook rule,
+which looks at how much data there is rather than how it was generated, and
+picked 4 lags for a series that stays correlated out to 63. And the average
+itself was a fiction: over 63 days the peer-excess return has a mean of +0.56%
+and a median of −2.11%, with the top 1% of rows carrying 402% of the entire sum.
+The typical stock loses to its group; the positive mean came from a handful of
+names, most of them reverse splits nobody adjusted. Each day's cross-section is
+now clipped at its own 1st and 99th percentile, and the median is printed next
+to the mean so this can't hide again.
+
+After all three fixes, top decile, net of 10bp round-trip costs:
+
+| Horizon | Base | Net return | t | Median | AUC |
+|--------:|-----:|-----------:|--:|-------:|----:|
+| 21 days | −0.170% | **+0.655%** | +2.52 | +0.457% | 0.528 |
+| 42 days | −0.030% | **+2.401%** | +2.53 | −0.118% | 0.531 |
+| 63 days | −0.035% | **+4.718%** | +3.98 | −0.203% | 0.508 |
+
+Shuffling the labels within each day, leaving everything else intact, gives 0 of
+3 horizons and three negative top deciles — so the machinery isn't manufacturing
+the result. `python run.py meta --karistir 42` runs that control on demand.
+
+What I'd actually claim: the 21-day result holds up, with both mean and median
+positive and a median spread of +1.22% over the base. At 42 days the deciles run
+in order and AUC is 0.531, but the median pick still loses slightly to its
+peers, so the average is carried by the right tail. At 63 days the t is highest
+and the result is weakest — AUC 0.508 and the deciles aren't monotone.
 
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
