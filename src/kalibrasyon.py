@@ -179,6 +179,60 @@ def _bench_hazirla(bench_close, gun_bazli: bool = True) -> "pd.Series | None":
     return out[~out.index.duplicated(keep="last")].sort_index()
 
 
+# Which raw indicators get turned into within-peer-group ranks. Not all 78 --
+# ranking every column would triple the panel for little gain, and these are
+# the ones where "where does this stand against its peers today" is a question
+# with an obvious meaning.
+CAPRAZ_OZELLIKLER = (
+    "g_rsi7", "g_rsi14", "g_roc5", "g_roc10", "g_roc20",
+    "g_ma20_uzaklik", "g_ma50_uzaklik", "g_ma200_uzaklik",
+    "g_atr14", "g_bb_pct", "g_bb_genislik",
+    "g_hacim10", "g_hacim50", "g_yukari_hacim_pay",
+    "g_adx", "g_di_fark",
+    "g_tepe20_uzaklik", "g_dip20_uzaklik", "g_donchian20", "g_sikisma",
+)
+
+
+def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
+    """Peer-relative ranks, and the label with the peer move taken out.
+
+    Two things happen here and they're the reason this pass exists at all.
+
+    The ranks answer a question none of the existing features do. Everything
+    else is absolute and per-stock -- "RSI is 32" -- and says nothing about
+    whether that's unusual for this group today. `x_` columns are the
+    within-(group, timestamp) percentile, which is the same idea the long-term
+    scorer has used from the start (src/scoring.py) and the short-term side
+    never had.
+
+    The label loses the peer move. The old one is excess over SPY, but SPY is
+    not what these stocks have in common -- their sector is. Subtracting the
+    group mean at each timestamp strips out the market and the sector and
+    leaves the idiosyncratic part, which is the only part a cross-sectional
+    model could predict in the first place.
+
+    Not lookahead: a rank at time t uses other stocks at time t, all of it
+    known at t. What has to be backward-looking is the features being ranked,
+    and that is locked down in tests/test_gosterge_seti.py.
+    """
+    if uzun.empty:
+        return uzun
+    g = uzun.groupby(["grup", "zaman"], sort=False)
+
+    sut = [c for c in CAPRAZ_OZELLIKLER if c in uzun.columns]
+    if sut:
+        siralar = g[sut].rank(pct=True)
+        siralar.columns = [f"x_{c[2:]}" if c.startswith("g_") else f"x_{c}"
+                           for c in sut]
+        uzun = pd.concat([uzun, siralar], axis=1)
+
+    for u in ufuklar:
+        ad = f"fazla_{u}g"
+        if ad in uzun.columns:
+            uzun[f"akran_{u}g"] = uzun[ad] - g[ad].transform("mean")
+    return uzun
+
+
 # =============================================================================
 #  Toplama
 # =============================================================================
@@ -570,7 +624,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           ufuklar: "tuple[int, ...]" = (3, 5, 10), min_bar: int = 220,
           yol: Path | None = None,
           ilerleme: "callable | None" = None,
-          frekans: str = "1d") -> dict:
+          frekans: str = "1d", gruplar: dict | None = None) -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -598,7 +652,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
 
     gun_bazli = (frekans == "1d")
     bench = _bench_hazirla(bench_close, gun_bazli)
+    gruplar = gruplar or {}
     parcalar: list[pd.DataFrame] = []
+    # Every bar of every stock, not just the signal bars -- a peer rank has to
+    # be taken over the whole cross-section, and signal rows alone are one or
+    # two names at any given timestamp.
+    capraz_parcalar: list[pd.DataFrame] = []
     islenen = hatali = 0
 
     for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
@@ -646,33 +705,46 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 var = t[(kid, "var")].to_numpy()
                 if not var.any():
                     continue
-                alt = pd.DataFrame(index=df.index[var])
-                alt.insert(0, "ticker", tk)
-                alt.insert(1, "tarih", gunler[var])
-                # Keep the exact bar timestamp as well. On hourly data the
-                # date alone collapses several signals from the same day into
-                # rows you can't tell apart, so there's no way back to the
-                # bars they came from.
-                alt.insert(2, "zaman", _zaman_indeks(df.index)[var])
-                alt.insert(3, "kurulum", kid)
-                alt.insert(4, "yon", kv.KAYIT[kid].yon)
-                alt["guc"] = t[(kid, "guc")].to_numpy()[var]
+                # Build the columns in a dict and make the frame once.
+                # Adding ~110 columns one at a time to a DataFrame fragments
+                # it badly, and this runs per setup per ticker.
+                kol: dict = {
+                    "ticker": tk,
+                    "tarih": gunler[var],
+                    "zaman": _zaman_indeks(df.index)[var],
+                    "kurulum": kid,
+                    "yon": kv.KAYIT[kid].yon,
+                    "guc": t[(kid, "guc")].to_numpy()[var],
+                }
                 for sut in oz.columns:
-                    alt[sut] = oz[sut].to_numpy()[var]
+                    kol[sut] = oz[sut].to_numpy()[var]
                 if genis is not None:
                     for sut in genis.columns:
-                        alt[sut] = genis[sut].to_numpy()[var]
+                        kol[sut] = genis[sut].to_numpy()[var]
                 for sut in ks.columns:
-                    alt[sut] = ks[sut].to_numpy()[var]
-                for ufuk, g in etiketler.items():
-                    alt[f"fazla_{ufuk}g"] = g.to_numpy()[var]
-                    alt[f"kazanc_{ufuk}g"] = (g.to_numpy()[var] > 0).astype(float)
-                    alt.loc[pd.isna(alt[f"fazla_{ufuk}g"]), f"kazanc_{ufuk}g"] = np.nan
+                    kol[sut] = ks[sut].to_numpy()[var]
+                for ufuk, g_ in etiketler.items():
+                    fz = g_.to_numpy()[var]
+                    kol[f"fazla_{ufuk}g"] = fz
+                    kz = (fz > 0).astype(float)
+                    kz[pd.isna(fz)] = np.nan
+                    kol[f"kazanc_{ufuk}g"] = kz
                     for ad in ("bariyer", "bariyertam"):
                         b = bariyer.get((ad, ufuk))
                         if b is not None:
-                            alt[f"{ad}_{ufuk}g"] = b.to_numpy()[var]
-                parcalar.append(alt.reset_index(drop=True))
+                            kol[f"{ad}_{ufuk}g"] = b.to_numpy()[var]
+                alt = pd.DataFrame(kol)
+                parcalar.append(alt)
+
+            if gruplar and genis is not None and tk in gruplar:
+                sut = [c for c in CAPRAZ_OZELLIKLER if c in genis.columns]
+                cx = pd.DataFrame({"ticker": tk, "grup": gruplar[tk],
+                                   "zaman": _zaman_indeks(df.index)})
+                for c in sut:
+                    cx[c] = genis[c].to_numpy()
+                for ufuk, g_ in etiketler.items():
+                    cx[f"fazla_{ufuk}g"] = g_.to_numpy()
+                capraz_parcalar.append(cx)
             islenen += 1
         except Exception:
             hatali += 1
@@ -684,7 +756,23 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
 
     tablo = pd.concat(parcalar, ignore_index=True)
-    tablo.insert(2, "frekans", frekans)
+    tablo.insert(3, "frekans", frekans)
+
+    capraz_bilgi = None
+    if capraz_parcalar:
+        uzun = pd.concat(capraz_parcalar, ignore_index=True)
+        uzun = capraz_kesit(uzun, ufuklar)
+        tut = (["ticker", "zaman"]
+               + [c for c in uzun.columns if c.startswith(("x_", "akran_"))])
+        tablo = tablo.merge(uzun[tut], on=["ticker", "zaman"], how="left")
+        capraz_bilgi = {
+            "grup": int(uzun["grup"].nunique()),
+            "hisse": int(uzun["ticker"].nunique()),
+            "bar": int(len(uzun)),
+            "sutun": [c for c in uzun.columns if c.startswith("x_")],
+            "etiket": [c for c in uzun.columns if c.startswith("akran_")],
+        }
+        del uzun
     # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
     # kalibrasyonda birer kez yaptik: tek dosyaya yazilan iki olcum,
     # ikincisi birincisini yok ediyor ve bunu hicbir sey soylemiyor.
@@ -704,9 +792,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         "ozellikler": [c for c in tablo.columns
                        if c not in ("ticker", "tarih", "zaman", "kurulum",
                                     "yon", "frekans")
-                       and not c.startswith(("fazla_", "kazanc_", "bariyer"))],
+                       and not c.startswith(("fazla_", "kazanc_", "bariyer",
+                                             "akran_"))],
+        "capraz": capraz_bilgi,
         "etiketler": [c for c in tablo.columns
-                      if c.startswith(("fazla_", "kazanc_", "bariyer"))],
+                      if c.startswith(("fazla_", "kazanc_", "bariyer",
+                                       "akran_"))],
         "bariyer_oran": {
             f"{u}g": round(float(tablo[f"bariyer_{u}g"].notna().mean()), 4)
             for u in ufuklar if f"bariyer_{u}g" in tablo.columns},

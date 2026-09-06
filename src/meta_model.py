@@ -85,7 +85,7 @@ def panel_yukle(frekans: str = "1d") -> pd.DataFrame | None:
 def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns
             if c not in KIMLIK
-            and not c.startswith(("fazla_", "kazanc_", "bariyer"))]
+            and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran_"))]
 
 
 def hazirla(df: pd.DataFrame, ufuk: int,
@@ -120,12 +120,31 @@ def hazirla(df: pd.DataFrame, ufuk: int,
 
     zaman = (pd.DatetimeIndex(pd.to_datetime(alt["zaman"], errors="coerce"))
              if "zaman" in alt.columns else None)
+    # The label says whether it worked; the return says by how much. A model
+    # can be right barely more than half the time and still be worth having if
+    # its wins are bigger than its losses, and a hit rate alone can't show
+    # that. Prefer the peer-demeaned return when it's there.
+    getiri_ad = next((c for c in (f"akran_{ufuk}g", f"fazla_{ufuk}g")
+                      if c in alt.columns), None)
+    getiri = (alt[getiri_ad].to_numpy(dtype=np.float64)
+              if getiri_ad else np.zeros(len(alt)))
+    # Some label columns are already 0/1 (kazanc, bariyer). The peer one is a
+    # return, and BCE needs a class, so it gets thresholded at zero -- "did it
+    # beat its peer group" rather than "by how much". The size is kept
+    # separately in `getiri` and that is what the top-decile metric reads.
+    ham_y = alt[etiket].to_numpy(dtype=np.float64)
+    benzersiz = np.unique(ham_y[np.isfinite(ham_y)])
+    if not set(benzersiz.tolist()) <= {0.0, 1.0}:
+        ham_y = (ham_y > 0).astype(np.float64)
+
     return {
         "X": XX.to_numpy(dtype=np.float32),
-        "y": alt[etiket].to_numpy(dtype=np.float32),
+        "y": ham_y.astype(np.float32),
         "tarih": pd.DatetimeIndex(alt["tarih"]).normalize(),
         "zaman": zaman,
         "ticker": alt["ticker"].to_numpy(),
+        "getiri": getiri,
+        "getiri_ad": getiri_ad,
         "kurulum": alt["kurulum"].to_numpy(),
         "kosullar": {c: alt[c].astype(str).to_numpy() for c in kategorik},
         "ozellik_adlari": list(XX.columns),
@@ -204,6 +223,63 @@ def guvenilirlik(p: np.ndarray, y: np.ndarray, dilim: int = 10) -> list[dict]:
                     "tahmin": round(float(g["p"].mean()), 4),
                     "gerceklesen": round(float(g["y"].mean()), 4)})
     return out
+
+
+def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
+                   tarih: pd.DatetimeIndex, dilim: int = 10,
+                   maliyet_bp: float = 0.0) -> dict:
+    """What the top slice actually returned, net of costs.
+
+    This is the number that decides whether the model is worth anything.
+    Brier and AUC both treat every row as equally important, and in practice
+    only the rows you'd act on matter -- you don't trade the middle of the
+    distribution. A model with AUC 0.51 whose top decile earns is useful; one
+    with AUC 0.55 whose top decile earns nothing is not.
+
+    Costs come off as a round-trip in basis points. Reported at several levels
+    because where an edge dies is more informative than whether it exists at
+    zero cost.
+
+    The t value is over DAILY means, Newey-West corrected -- signals on the
+    same day share one market day, and a per-row t would inflate the sample
+    roughly tenfold.
+    """
+    from .faktor_zaman import newey_west_t
+
+    n = len(p)
+    if n < 100:
+        return {"ok": False, "reason": f"{n} satir"}
+    esik = np.quantile(p, 1.0 - 1.0 / dilim)
+    ust = p >= esik
+    if ust.sum() < 50:
+        return {"ok": False, "reason": "ust dilim cok kucuk"}
+
+    net = getiri[ust] - maliyet_bp / 10000.0
+    gunluk = pd.DataFrame({"gun": tarih[ust], "r": net}).groupby("gun")["r"].mean()
+    if len(gunluk) < 5:
+        return {"ok": False, "reason": f"{len(gunluk)} gun"}
+    tv, _, _ = newey_west_t(gunluk.to_numpy(), lag=None)
+
+    dilimler = []
+    try:
+        kova = pd.qcut(p, dilim, labels=False, duplicates="drop")
+        for k, g in pd.DataFrame({"k": kova, "r": getiri}).groupby("k"):
+            dilimler.append({"dilim": int(k), "n": int(len(g)),
+                             "getiri": round(float(g["r"].mean()), 6)})
+    except ValueError:
+        pass
+
+    return {
+        "ok": True,
+        "n": int(ust.sum()),
+        "gun": int(len(gunluk)),
+        "getiri": round(float(net.mean()), 6),
+        "brut": round(float(getiri[ust].mean()), 6),
+        "taban": round(float(getiri.mean()), 6),
+        "t_nw": None if not np.isfinite(tv) else round(float(tv), 2),
+        "maliyet_bp": maliyet_bp,
+        "dilimler": dilimler,
+    }
 
 
 def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
@@ -483,7 +559,8 @@ def _tahmin(model: dict, X: np.ndarray, Xd: np.ndarray | None = None
 def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                  n_kat: int = 4, embargo_gun: int = 5,
                  bar_gun: float = 1.0, seed: int = 7,
-                 Xd: "np.ndarray | None" = None) -> dict:
+                 Xd: "np.ndarray | None" = None,
+                 maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0)) -> dict:
     """Zaman sirali katmanlar; arindirma + tampon ile.
 
     Her katmanda: o katmandan ONCEKI gunlerle egit, katmanin kendisinde olc.
@@ -499,7 +576,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
 
     parcalar = np.array_split(gunler, n_kat + 1)
     katlar = []
-    tum_p, tum_b, tum_y, tum_t = [], [], [], []
+    tum_p, tum_b, tum_y, tum_t, tum_r = [], [], [], [], []
 
     for k in range(1, n_kat + 1):
         test_gun = set(pd.Timestamp(g) for g in parcalar[k])
@@ -539,13 +616,17 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         })
         tum_p.append(p); tum_b.append(b); tum_y.append(y)
         tum_t.append(veri["tarih"][test_maske])
+        tum_r.append(veri["getiri"][test_maske])
 
     if not katlar:
         return {"ok": False, "reason": "hicbir katman kurulamadi"}
 
     P = np.concatenate(tum_p); B = np.concatenate(tum_b)
     Y = np.concatenate(tum_y); T = pd.DatetimeIndex(np.concatenate(tum_t))
+    R = np.concatenate(tum_r)
     fark, t, n_gun = gunluk_fark(P, B, Y, T)
+    dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c)
+             for c in maliyetler}
 
     return {
         "ok": True,
@@ -561,7 +642,14 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         "auc_kova": round(auc(B, Y), 4),
         "gunluk_fark": None if not np.isfinite(fark) else round(fark, 6),
         "t_nw": None if not np.isfinite(t) else round(t, 2),
-        "model_daha_iyi": bool(np.isfinite(t) and t >= 2.0),
+        "brier_daha_iyi": bool(np.isfinite(t) and t >= 2.0),
+        "dilim": dilim,
+        # The headline call. Brier says whether the probabilities are better
+        # calibrated; this says whether the rows you'd act on made money after
+        # costs. The second question is the one that matters.
+        "model_daha_iyi": bool(
+            (dilim.get("10bp", {}).get("t_nw") or 0) >= 2.0
+            and (dilim.get("10bp", {}).get("getiri") or 0) > 0),
         "guvenilirlik": guvenilirlik(P, Y),
         "tahmin_araligi": [round(float(P.min()), 4), round(float(P.max()), 4)],
     }
@@ -586,7 +674,8 @@ def _barlari_yukle(frekans: str, semboller: set) -> dict:
 
 def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              n_kat: int = 4, seed: int = 7, dizi: bool = False,
-             pencere: int = 24, etiket: str = "kazanc") -> dict:
+             pencere: int = 24, etiket: str = "kazanc",
+             maliyetler: "tuple[float, ...]" = (0.0, 10.0, 20.0)) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -659,7 +748,9 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
             taban = float(np.nanmean(veri["y"]))
             kalib_kul = None
         r = walk_forward(veri, u, kalib_kul, taban, n_kat=n_kat,
-                         bar_gun=bg, seed=seed, Xd=Xd)
+                         bar_gun=bg, seed=seed, Xd=Xd,
+                         maliyetler=maliyetler)
+        r["getiri_ad"] = veri.get("getiri_ad")
         r["taban_orani"] = round(taban, 4)
         r["ozellik"] = len(veri["ozellik_adlari"])
         r.setdefault("ufuk", u)
@@ -688,8 +779,16 @@ def _notlar(sonuc: list) -> list[str]:
         return ["Hicbir ufukta model olculemedi."]
     iyi = [r for r in calisan if r.get("model_daha_iyi")]
     out.append(
-        f"{len(calisan)} ufuk olculdu, {len(iyi)} tanesinde model taban "
-        "cizgisini gun bazinda |t|>=2 ile geciyor.")
+        f"{len(calisan)} ufuk olculdu, {len(iyi)} tanesinde ust dilim 10bp "
+        "maliyetten sonra pozitif ve gun bazinda t>=2.")
+    for r in calisan:
+        d = (r.get("dilim") or {}).get("10bp") or {}
+        if d.get("ok"):
+            out.append(
+                f"Ufuk {r['ufuk']}: ust dilim brut %{100*d['brut']:.3f}, "
+                f"10bp sonrasi %{100*d['getiri']:.3f}, taban "
+                f"%{100*d['taban']:.3f}, t={d['t_nw']}, {d['n']} satir / "
+                f"{d['gun']} gun.")
     if not iyi:
         out.append(
             "Model, kova bazli kalibrasyonun uzerine OLCULEBILIR bir sey "

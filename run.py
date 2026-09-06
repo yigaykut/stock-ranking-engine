@@ -2014,6 +2014,21 @@ def kisa_min_bar() -> int:
     return kv.MIN_BAR
 
 
+def _kisa_ufuklar(args: argparse.Namespace) -> tuple:
+    """--ufuklar overrides the per-frequency default.
+
+    Long horizons need this: the daily default is 3/5/10 days, and the
+    anomalies that survive in the literature live at weeks to months.
+    """
+    from src import kisa_vade as kv
+
+    ham = getattr(args, "ufuklar", None)
+    if not ham:
+        return kv.ufuklar(args.frekans)
+    out = tuple(int(x) for x in str(ham).split(",") if x.strip().isdigit())
+    return out or kv.ufuklar(args.frekans)
+
+
 def _kisa_bench(args: argparse.Namespace):
     """Karsilastirma endeksi. Yoksa acikca uyarir.
 
@@ -2073,7 +2088,7 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         def ilerleme(i, islenen):
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
 
-        payload = kb.kur(bundles, bench, ufuklar=kv.ufuklar(args.frekans),
+        payload = kb.kur(bundles, bench, ufuklar=_kisa_ufuklar(args),
                          min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                          frekans=args.frekans)
         yol = kb.kaydet(payload)
@@ -2095,9 +2110,19 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         def ilerleme(i, islenen):
             print(f"      {i} sembol tarandi ({islenen} kullanildi)", flush=True)
 
-        ozet = kb.panel(bundles, bench, ufuklar=kv.ufuklar(args.frekans),
+        from src import havuz as _hv
+
+        gruplar = _hv.grup_esleme()
+        if not gruplar:
+            print("  UYARI: akran gruplari yok, capraz kesitsel sutunlar "
+                  "uretilmeyecek. Once: python run.py havuz --tam",
+                  file=sys.stderr)
+        else:
+            print(f"  akran gruplari: {len(set(gruplar.values()))} grup, "
+                  f"{len(gruplar)} sembol", flush=True)
+        ozet = kb.panel(bundles, bench, ufuklar=_kisa_ufuklar(args),
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
-                        frekans=args.frekans)
+                        frekans=args.frekans, gruplar=gruplar)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
@@ -2247,6 +2272,32 @@ def cmd_havuz(args: argparse.Namespace) -> int:
               file=sys.stderr)
         return 1
 
+    if getattr(args, "tam", False):
+        d = hv.tam_gruplar(bundles, min_fiyat=args.min_fiyat,
+                           min_dv=args.min_hacim)
+        if not d.get("ok"):
+            print(f"HATA: {d.get('reason')}", file=sys.stderr)
+            return 1
+        print("=" * 80)
+        print("AKRAN GRUPLARI — tum evren")
+        print("=" * 80)
+        print(f"  evren {d['evren']} -> olculebilir {d['uygun']} -> "
+              f"{d['grup_sayisi']} grup")
+        print(f"  grup = sektor x piyasa degeri terzili, en az {d['min_grup']} uye")
+        print()
+        print(f"  {'GRUP':<34}{'UYE':>5}   {'MCAP':>8}{'HACIM':>9}{'ATR%':>7}")
+        print("  " + "-" * 66)
+        for g in d["gruplar"]:
+            md = g["dagilim"]
+            print(f"  {g['id'][:34]:<34}{g['boyut']:>5}   "
+                  f"{md['log_mcap']['medyan']:>8.2f}"
+                  f"{md['log_dolar_hacim']['medyan']:>9.2f}"
+                  f"{md['atr_pct']['medyan'] * 100:>7.2f}")
+        yol = hv.gruplari_kaydet(d)
+        print()
+        print(f"Kaydedildi: {yol}")
+        return 0
+
     d = hv.kur(bundles, boyut=args.boyut, en_fazla_sektor=args.sektor_sayisi,
                min_fiyat=args.min_fiyat, min_dv=args.min_hacim)
     if not d.get("ok"):
@@ -2373,6 +2424,14 @@ def cmd_intraday(args: argparse.Namespace) -> int:
     return 0 if sonuc["durum"] == "tamam" else 2
 
 
+def maliyet_basliklari(d: dict) -> list:
+    for r in d.get("sonuclar", []):
+        dl = r.get("dilim") or {}
+        if dl:
+            return list(dl)
+    return []
+
+
 def cmd_meta(args: argparse.Namespace) -> int:
     """Meta-model: kurulum tutacak mi?
 
@@ -2396,8 +2455,12 @@ def cmd_meta(args: argparse.Namespace) -> int:
         print("  Taban : kova bazli kalibrasyon")
     print()
 
-    d = mm.calistir(args.frekans, n_kat=args.kat, seed=args.seed,
-                    dizi=args.dizi, pencere=args.pencere, etiket=args.etiket)
+    maliyetler = tuple(float(x) for x in str(args.maliyet).split(",")
+                       if x.strip())
+    d = mm.calistir(args.frekans, ufuklar=_kisa_ufuklar(args),
+                    n_kat=args.kat, seed=args.seed,
+                    dizi=args.dizi, pencere=args.pencere, etiket=args.etiket,
+                    maliyetler=maliyetler)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2423,6 +2486,27 @@ def cmd_meta(args: argparse.Namespace) -> int:
               f"{r['brier_taban']:>9.5f}{r['auc_model']:>7.3f}"
               f"{r['auc_kova']:>7.3f}"
               f"{(f'{t:+.2f}' if t is not None else '-'):>7}  {karar}")
+    print()
+    print("  UST DILIM GETIRISI (model en yuksek %10, maliyet dusulmus)")
+    print(f"  {'UFUK':>5}{'N':>8}{'GUN':>6}{'TABAN':>9}"
+          + "".join(f"{k:>11}" for k in maliyet_basliklari(d))
+          + f"{'t(10bp)':>9}")
+    print("  " + "-" * 66)
+    for r in d["sonuclar"]:
+        if not r.get("ok"):
+            continue
+        dl = r.get("dilim") or {}
+        ilk = next((v for v in dl.values() if v.get("ok")), {})
+        if not ilk:
+            continue
+        satir = (f"  {r['ufuk']:>5}{ilk['n']:>8,}{ilk['gun']:>6}"
+                 f"{100 * ilk['taban']:>8.3f}%")
+        for k in maliyet_basliklari(d):
+            v = dl.get(k, {})
+            satir += f"{100 * (v.get('getiri') or 0):>10.3f}%"
+        t10 = (dl.get("10bp") or {}).get("t_nw")
+        satir += f"{(f'{t10:+.2f}' if t10 is not None else '-'):>9}"
+        print(satir)
     print()
     print("  BRIER-M model · BRIER-K kova · BRIER-T sabit taban orani.")
     print("  Kucuk daha iyi. AUC 0.50 = siralama gucu yok.")
@@ -2628,6 +2712,9 @@ def main() -> int:
                       help="bar frekansi. 1d tum evreni, gun ici olanlar "
                            "YALNIZCA havuzu kullanir. Ufuklar BAR cinsindendir "
                            "ve frekansa gore degisir.")
+    kv_p.add_argument("--ufuklar", default=None,
+                      help="virgullu bar listesi (orn. 21,42,63). Bos "
+                           "birakilirsa frekansin varsayilani kullanilir.")
     kv_p.add_argument("--period", default="2y", help="onbellek gecmis araligi")
     kv_p.add_argument("--cache-days", type=int, default=30,
                       help="onbellekte bu kadar gunden eski kayit kullanilmaz")
@@ -2639,6 +2726,9 @@ def main() -> int:
     hp = sub.add_parser("havuz", aliases=["pool"],
                         help="benzer sirketlerden test havuzu kur "
                              "(kisa vade olcumu icin)")
+    hp.add_argument("--tam", action="store_true",
+                    help="dar havuzlar yerine TUM evreni akran gruplarina "
+                         "ayir (capraz kesitsel ozellikler icin)")
     hp.add_argument("--boyut", type=int, default=25,
                     help="havuz basina hisse sayisi")
     hp.add_argument("--sektor-sayisi", type=int, default=6,
@@ -2672,13 +2762,17 @@ def main() -> int:
     mp2.add_argument("--kat", type=int, default=4,
                      help="ileri yuruyus katman sayisi")
     mp2.add_argument("--seed", type=int, default=7)
+    mp2.add_argument("--maliyet", default="0,10,20",
+                     help="gidis-donus maliyet (baz puan), virgullu")
+    mp2.add_argument("--ufuklar", default=None,
+                     help="virgullu bar listesi (orn. 21,42,63)")
     mp2.add_argument("--dizi", action="store_true",
                      help="sinyal oncesi barlari da modele ver "
                           "(grafigin sekli, sadece o anki degerler degil)")
     mp2.add_argument("--pencere", type=int, default=24,
                      help="--dizi ile: kac bar geriye bakilsin")
     mp2.add_argument("--etiket", default="kazanc",
-                     choices=["kazanc", "bariyer", "bariyertam"],
+                     choices=["kazanc", "bariyer", "bariyertam", "akran"],
                      help="kazanc: N bar sonra endeksi gecti mi - "
                           "bariyer: hedefe mi once degdi stopa mi (cozulmeyen "
                           "satirlar bos) - bariyertam: ayni ama cozulmeyenler "

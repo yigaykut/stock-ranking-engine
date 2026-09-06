@@ -207,6 +207,61 @@ check("nitelikler son gunun degil TIPIK halin olcusu",
       "tail(120)" in govde)
 
 print()
+print("=" * 72)
+print("8) PEER GROUPS OVER THE WHOLE UNIVERSE")
+print("=" * 72)
+
+# kur() picks a tight subset; tam_gruplar() has to place everyone, because a
+# cross-sectional rank taken over 25 names is coarse and leaves most of the
+# universe unranked.
+genis = {}
+for i in range(140):
+    sek = ["Technology", "Healthcare", "Financial Services"][i % 3]
+    genis[f"G{i:03d}"] = paket(20 + (i % 40) * 3, 3e6 + i * 1e5, 0.02,
+                               sek, 2e8 * (1 + i), seed=500 + i)
+genis["UCUZ2"] = paket(1.5, 5e6, 0.02, "Technology", 2e9, seed=900)
+genis["INCE2"] = paket(60.0, 1e5, 0.02, "Technology", 2e9, seed=901)
+
+g = hv.tam_gruplar(genis)
+check("groups were built", g.get("ok"), str(g.get("reason")))
+uyeler = [u for gr in g["gruplar"] for u in gr["uyeler"]]
+check("every eligible stock is placed", len(uyeler) == g["uygun"],
+      f"{len(uyeler)} / {g['uygun']}")
+check("nobody is in two groups", len(set(uyeler)) == len(uyeler))
+check("the cheap one is excluded", "UCUZ2" not in uyeler)
+check("the thin one is excluded", "INCE2" not in uyeler)
+check("every group is one sector",
+      all(len({u for u in gr["uyeler"]}) and
+          len({genis[u]["info"]["sector"] for u in gr["uyeler"]}) == 1
+          for gr in g["gruplar"]),
+      str([gr["id"] for gr in g["gruplar"]
+           if len({genis[u]["info"]["sector"] for u in gr["uyeler"]}) > 1]))
+check("no group is below the minimum",
+      all(gr["boyut"] >= hv.MIN_GRUP for gr in g["gruplar"]),
+      str([(gr["id"], gr["boyut"]) for gr in g["gruplar"]
+           if gr["boyut"] < hv.MIN_GRUP]))
+check("the mapping covers the same names",
+      set(g["esleme"]) == set(uyeler))
+print(f"        {g['grup_sayisi']} groups, sizes "
+      f"{min(x['boyut'] for x in g['gruplar'])}-"
+      f"{max(x['boyut'] for x in g['gruplar'])}")
+
+# Size terciles should actually separate size.
+tek_sektor = [gr for gr in g["gruplar"] if gr["sektor"] == "Technology"]
+if len(tek_sektor) >= 2:
+    medyanlar = sorted(gr["dagilim"]["log_mcap"]["medyan"] for gr in tek_sektor)
+    check("size terciles are ordered and distinct",
+          all(b - a > 0.05 for a, b in zip(medyanlar, medyanlar[1:])),
+          str([round(x, 2) for x in medyanlar]))
+
+with tempfile.TemporaryDirectory() as td:
+    pth = Path(td) / "gr.json"
+    hv.gruplari_kaydet(g, pth)
+    geri = hv.gruplari_yukle(pth)
+    check("save and load round-trips", geri["grup_sayisi"] == g["grup_sayisi"])
+    check("the mapping survives", hv.grup_esleme(geri) == g["esleme"])
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

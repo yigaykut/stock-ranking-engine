@@ -134,6 +134,49 @@ check("labels are excluded",
 check("real features survive", set(oz) == {"guc", "rsi14"}, str(oz))
 
 print()
+print("=" * 72)
+print("5) TOP-DECILE RETURN")
+print("=" * 72)
+
+# This is the metric the decision now rests on, so it has to do three things:
+# find a real edge, stay quiet on a fake one, and show where costs kill a
+# small one. Hit rate can't show the third.
+rng2 = np.random.default_rng(3)
+n = 8000
+gun = pd.DatetimeIndex(np.repeat(pd.date_range("2025-01-01", periods=400), 20))
+sinyal = rng2.normal(0, 1, n)
+getiri = 0.004 * sinyal + rng2.normal(0, 0.02, n)
+tahmin = 0.5 + 0.1 * sinyal + rng2.normal(0, 0.02, n)
+
+d = mm.dilim_getirisi(tahmin, getiri, gun, maliyet_bp=10)
+check("a planted edge is found", d["ok"] and d["t_nw"] >= 2, str(d.get("t_nw")))
+check("top decile beats the base rate", d["getiri"] > d["taban"],
+      f"{100*d['getiri']:.3f}% vs {100*d['taban']:.3f}%")
+check("costs come off the gross number",
+      abs((d["brut"] - d["getiri"]) - 0.001) < 1e-9,
+      f"{100*d['brut']:.3f}% -> {100*d['getiri']:.3f}%")
+getiriler = [x["getiri"] for x in d["dilimler"]]
+check("deciles are ordered", getiriler[-1] > getiriler[0],
+      f"{100*getiriler[0]:.2f}% .. {100*getiriler[-1]:.2f}%")
+
+bos = mm.dilim_getirisi(rng2.normal(0.5, 0.1, n), getiri, gun, maliyet_bp=10)
+check("no edge when predictions are noise", abs(bos["t_nw"]) < 2,
+      str(bos["t_nw"]))
+
+kucuk = 0.0003 * sinyal + rng2.normal(0, 0.02, n)
+sifir = mm.dilim_getirisi(tahmin, kucuk, gun, maliyet_bp=0)
+yirmi = mm.dilim_getirisi(tahmin, kucuk, gun, maliyet_bp=20)
+check("a small edge survives at zero cost and dies at 20bp",
+      sifir["getiri"] > 0 > yirmi["getiri"],
+      f"{100*sifir['getiri']:+.4f}% -> {100*yirmi['getiri']:+.4f}%")
+
+check("too few rows is refused",
+      not mm.dilim_getirisi(tahmin[:50], getiri[:50], gun[:50])["ok"])
+check("too few days is refused",
+      not mm.dilim_getirisi(tahmin[:500], getiri[:500],
+                            pd.DatetimeIndex(["2025-01-01"] * 500))["ok"])
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

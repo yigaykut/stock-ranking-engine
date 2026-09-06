@@ -465,6 +465,53 @@ finally:
     kv.KAYIT.pop(TEST_ID, None)
 
 print()
+print("=" * 72)
+print("11) CROSS-SECTIONAL COLUMNS AND THE PEER LABEL")
+print("=" * 72)
+
+# Ranks have to be taken inside (group, timestamp). Rank across the whole
+# frame instead and a stock looks strong purely because its group is strong,
+# which is the sector move we were trying to remove.
+zaman = pd.date_range("2025-01-01", periods=40)
+satir = []
+for g_ in ("A", "B"):
+    for i in range(10):
+        for z in zaman:
+            satir.append({
+                "ticker": f"{g_}{i}", "grup": g_, "zaman": z,
+                # Group B sits far above group A on every axis.
+                "g_rsi14": (10 * i) + (60 if g_ == "B" else 0),
+                "g_atr14": 0.01 + 0.001 * i + (0.05 if g_ == "B" else 0),
+                "fazla_5g": 0.01 * i + (0.5 if g_ == "B" else 0),
+            })
+uzun = pd.DataFrame(satir)
+cx = kb.capraz_kesit(uzun, (5,))
+
+check("x_ columns were produced",
+      {"x_rsi14", "x_atr14"} <= set(cx.columns), str([c for c in cx.columns]))
+check("ranks stay inside 0-1",
+      bool(cx["x_rsi14"].between(0, 1).all()))
+bir_an = cx[cx["zaman"] == zaman[0]]
+check("the two groups get the same rank range",
+      abs(float(bir_an[bir_an.grup == "A"]["x_rsi14"].max())
+          - float(bir_an[bir_an.grup == "B"]["x_rsi14"].max())) < 1e-9,
+      "a group that is high across the board must not rank high")
+check("rank tracks within-group order",
+      float(bir_an[(bir_an.grup == "A") & (bir_an.ticker == "A9")]["x_rsi14"])
+      > float(bir_an[(bir_an.grup == "A") & (bir_an.ticker == "A0")]["x_rsi14"]))
+
+check("peer label was produced", "akran_5g" in cx.columns)
+grup_ort = cx.groupby(["grup", "zaman"])["akran_5g"].mean().abs().max()
+check("peer label zeroes the group mean", float(grup_ort) < 1e-9,
+      f"{float(grup_ort):.2e}")
+check("the group offset is gone",
+      abs(float(cx[cx.grup == "A"]["akran_5g"].mean())
+          - float(cx[cx.grup == "B"]["akran_5g"].mean())) < 1e-9,
+      "raw fazla_5g differs by 0.5 between groups")
+check("the label still varies inside a group",
+      float(cx[cx.grup == "A"]["akran_5g"].std()) > 0.01)
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

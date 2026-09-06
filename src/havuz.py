@@ -347,3 +347,111 @@ def semboller(payload: dict | None = None, havuz_id: str | None = None
             continue
         out.extend(h["uyeler"])
     return sorted(dict.fromkeys(out))
+
+
+# =============================================================================
+#  Peer groups covering the whole universe
+# =============================================================================
+GRUP_CIKTI = DATA / "akran_gruplari.json"
+
+# A group smaller than this makes a within-group percentile meaningless.
+MIN_GRUP = 20
+
+
+def tam_gruplar(bundles: dict, terzil: int = 3, min_fiyat: float = MIN_FIYAT,
+                min_dv: float = MIN_DOLAR_HACIM) -> dict:
+    """Put every eligible stock in a peer group, rather than picking a few.
+
+    kur() builds six tight pools of 25 for measurement, and that's the right
+    shape when you want a clean read on one setup. It's the wrong shape for
+    cross-sectional features: ranking a stock against 24 others is a coarse
+    rank, and 150 names leaves most of the universe out.
+
+    Here every stock lands in exactly one group, defined as sector crossed
+    with a size tercile inside that sector. Terciles are cut within the
+    sector because a mid-cap bank and a mid-cap biotech aren't the same size
+    in any useful sense.
+
+    Groups below MIN_GRUP get folded into the neighbouring tercile of the
+    same sector — a percentile over twelve names is mostly noise.
+    """
+    ham = nitelikler(bundles)
+    if ham.empty:
+        return {"ok": False, "reason": "nitelik cikarilamadi"}
+    uygun = _uygun(ham, min_fiyat, min_dv)
+    if uygun.empty:
+        return {"ok": False, "reason": "sert filtreleri gecen hisse yok"}
+
+    uygun = uygun.copy()
+    uygun["grup"] = None
+    for sek, alt in uygun.groupby("sektor"):
+        if len(alt) < MIN_GRUP:
+            uygun.loc[alt.index, "grup"] = f"{_kimlik(sek)}__tum"
+            continue
+        n_kova = max(1, min(terzil, len(alt) // MIN_GRUP))
+        try:
+            kova = pd.qcut(alt["log_mcap"], n_kova, labels=False,
+                           duplicates="drop")
+        except ValueError:
+            kova = pd.Series(0, index=alt.index)
+        uygun.loc[alt.index, "grup"] = [f"{_kimlik(sek)}__b{int(k)}"
+                                        for k in kova.fillna(0)]
+
+    # Fold anything still too small into the largest group of its sector.
+    sayim = uygun["grup"].value_counts()
+    kucuk = [g for g, n in sayim.items() if n < MIN_GRUP]
+    for g in kucuk:
+        sek = g.split("__")[0]
+        kardes = [x for x in sayim.index
+                  if x.split("__")[0] == sek and x not in kucuk]
+        hedef = kardes[0] if kardes else f"{sek}__tum"
+        uygun.loc[uygun["grup"] == g, "grup"] = hedef
+
+    gruplar = []
+    for g, alt in uygun.groupby("grup"):
+        gruplar.append({
+            "id": g,
+            "sektor": alt["sektor"].iloc[0],
+            "boyut": int(len(alt)),
+            "uyeler": sorted(alt["ticker"].tolist()),
+            "dagilim": {e: _dagilim(alt, e)
+                        for e in ("log_mcap", "log_dolar_hacim", "atr_pct")},
+            "daralma": _daralma(alt, alt, uygun),
+        })
+    gruplar.sort(key=lambda x: -x["boyut"])
+
+    return {
+        "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
+        "ok": True,
+        "evren": int(len(ham)),
+        "uygun": int(len(uygun)),
+        "grup_sayisi": len(gruplar),
+        "min_grup": MIN_GRUP,
+        "terzil": terzil,
+        "gruplar": gruplar,
+        "esleme": dict(zip(uygun["ticker"], uygun["grup"])),
+    }
+
+
+def gruplari_kaydet(payload: dict, path: Path | None = None) -> Path:
+    p = path or GRUP_CIKTI
+    p.parent.mkdir(parents=True, exist_ok=True)
+    p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
+                 encoding="utf-8")
+    return p
+
+
+def gruplari_yukle(path: Path | None = None) -> dict | None:
+    p = path or GRUP_CIKTI
+    if not p.exists():
+        return None
+    try:
+        return json.loads(p.read_text(encoding="utf-8"))
+    except Exception:
+        return None
+
+
+def grup_esleme(payload: dict | None = None) -> dict:
+    """{ticker: group} — what the panel builder needs."""
+    d = payload or gruplari_yukle()
+    return dict((d or {}).get("esleme") or {})
