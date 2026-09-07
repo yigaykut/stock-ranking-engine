@@ -596,6 +596,39 @@ with tempfile.TemporaryDirectory() as td:
           str(hepsi["satir"]))
 
 print()
+print("=" * 72)
+print("13) THE SETUP ROWS ARE FLUSHED AS THEY GO")
+print("=" * 72)
+
+# Ten years of setup rows is a gigabyte, and holding it next to the
+# cross-section is what got the build killed. It goes out to a file in
+# batches instead. The hazard is that a ticker whose barrier labels failed
+# produces a narrower frame, and appending that to a CSV shifts every value
+# after it one column to the left without complaining once.
+with tempfile.TemporaryDirectory() as td:
+    hedef = Path(td) / "akis.csv"
+    genis_p = pd.DataFrame({"ticker": ["A", "A"], "guc": [1.0, 2.0],
+                            "bariyer_5g": [1.0, 0.0]})
+    dar_p = pd.DataFrame({"ticker": ["B"], "guc": [3.0]})
+
+    sut = kb._dok([genis_p.copy()], hedef, None)
+    check("the first batch fixes the columns", sut == list(genis_p.columns),
+          str(sut))
+    sut = kb._dok([dar_p.copy()], hedef, sut)
+    okunan = pd.read_csv(hedef)
+
+    check("both batches are in the file", len(okunan) == 3, str(len(okunan)))
+    check("the narrow batch did not shift the columns",
+          okunan["guc"].tolist() == [1.0, 2.0, 3.0], str(okunan["guc"].tolist()))
+    check("its missing column comes back blank, not filled with the neighbour",
+          bool(okunan["bariyer_5g"].isna().iloc[2]),
+          str(okunan["bariyer_5g"].tolist()))
+    check("the header is written once",
+          hedef.read_text(encoding="utf-8").count("ticker") == 1)
+    check("nothing to flush writes nothing",
+          kb._dok([], hedef, sut) == sut and len(pd.read_csv(hedef)) == 3)
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

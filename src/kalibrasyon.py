@@ -554,6 +554,8 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
                              [(ad, s[var]) for ad, s in dilimler],
                              yon=kur_.yon)
             islenen += 1
+            if sum(len(x) for x in parcalar) >= 300_000:
+                akis_sutun = _dok(parcalar, gecici, akis_sutun)
         except Exception:
             hatali += 1
             continue
@@ -766,6 +768,33 @@ def panel_yolu(frekans: str) -> Path:
     return DATA / f"kisa_vade_panel_{frekans}.csv"
 
 
+def _dok(parcalar: list, yol: Path, sutunlar: list | None) -> list:
+    """Append the accumulated setup rows to a file and let go of them.
+
+    Ten years of setup rows is a gigabyte of frame, and it used to sit in
+    memory next to the cross-section until both were finished. Flushing as we
+    go means the peak is one batch instead of the whole table.
+
+    The column list is pinned to whatever the first batch had. A ticker whose
+    barrier labels failed to compute produces a narrower frame, and appending
+    that to a CSV shifts every value after it one column left without
+    complaining once.
+    """
+    if not parcalar:
+        return sutunlar
+    par = pd.concat(parcalar, ignore_index=True, copy=False)
+    parcalar.clear()
+    if sutunlar is None:
+        sutunlar = list(par.columns)
+    else:
+        par = par.reindex(columns=sutunlar)
+    par.to_csv(yol, index=False, header=not yol.exists(), mode="a",
+               float_format="%.6g")
+    del par
+    gc.collect()
+    return sutunlar
+
+
 def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           ufuklar: "tuple[int, ...]" = (3, 5, 10), min_bar: int = 220,
           yol: Path | None = None,
@@ -820,6 +849,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     if sadece_capraz and bench is not None and capraz_adim > 1:
         izgara = _gunluk_indeks(bench.index)[::int(capraz_adim)].to_numpy()
     parcalar: list[pd.DataFrame] = []
+    # Where the setup rows go while the cross-section is still being built.
+    gecici = (yol or panel_yolu(frekans)).with_suffix(".ham.csv")
+    gecici.parent.mkdir(parents=True, exist_ok=True)
+    gecici.unlink(missing_ok=True)
+    akis_sutun: list | None = None
+    akis_satir = 0
     # Every bar of every stock, not just the signal bars -- a peer rank has to
     # be taken over the whole cross-section, and signal rows alone are one or
     # two names at any given timestamp.
@@ -933,19 +968,17 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         if ilerleme and (i + 1) % 200 == 0:
             ilerleme(i + 1, islenen)
 
-    if not parcalar and not sadece_capraz:
+    if not sadece_capraz:
+        akis_sutun = _dok(parcalar, gecici, akis_sutun)
+    parcalar.clear()
+    gc.collect()
+    if not sadece_capraz and not gecici.exists():
         return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
     if not capraz_parcalar and sadece_capraz:
         return {"ok": False, "reason": "capraz kesit kurulamadi"}
 
-    tablo = None
-    if parcalar:
-        tablo = pd.concat(parcalar, ignore_index=True, copy=False)
-        parcalar.clear()
-        gc.collect()
-        tablo.insert(3, "frekans", frekans)
-
     capraz_bilgi = None
+    uzun = None
     if capraz_parcalar:
         uzun = pd.concat(capraz_parcalar, ignore_index=True, copy=False)
         capraz_parcalar.clear()
@@ -969,18 +1002,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "tablo": capraz_tablo,
         }
         # Drop everything the merge doesn't need before the merge, not after.
-        if tablo is not None:
-            uzun = uzun[tut]
-            gc.collect()
-            tablo["tk"] = tablo["ticker"].map(tk_kod).astype("Int32")
-            tablo = tablo.merge(uzun, on=["tk", "zaman"], how="left")
-            tablo = tablo.drop(columns=["tk"])
-        del uzun
-        gc.collect()
+        uzun = uzun[tut] if not sadece_capraz else None
     # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
     # kalibrasyonda birer kez yaptik: tek dosyaya yazilan iki olcum,
     # ikincisi birincisini yok ediyor ve bunu hicbir sey soylemiyor.
-    if tablo is None:
+    if sadece_capraz:
         # Cross-section only: there is no setup table to write, and the one
         # already on disk is left where it is rather than being replaced by
         # an empty file.
@@ -1000,34 +1026,71 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "etiketler": (capraz_bilgi or {}).get("etiket", []),
             "etiketli_oran": {},
         }
+    # Read the setup rows back a piece at a time, glue the cross-sectional
+    # columns onto each piece, and write it out. The joined table is never
+    # whole in memory, which is the only reason ten years of it fits: the
+    # setup rows, the cross-section and the join were three gigabytes between
+    # them and the build was killed halfway through.
     p = yol or panel_yolu(frekans)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tablo.to_csv(p, index=False, float_format="%.6g")
+    p.unlink(missing_ok=True)
+    satir = 0
+    kurulumlar: set = set()
+    ilk_tarih = son_tarih = None
+    dolu = {f"{u}g": [0, 0] for u in ufuklar}
+    bariyer_dolu = {f"{u}g": [0, 0] for u in ufuklar}
+    sutunlar: list = []
+
+    for parca in pd.read_csv(gecici, chunksize=250_000):
+        parca.insert(3, "frekans", frekans)
+        if uzun is not None:
+            parca["tk"] = parca["ticker"].map(tk_kod).astype("Int32")
+            parca["zaman"] = _zaman_indeks(parca["zaman"])
+            parca = parca.merge(uzun, on=["tk", "zaman"], how="left")
+            parca = parca.drop(columns=["tk"])
+        parca.to_csv(p, index=False, header=not satir, mode="a",
+                     float_format="%.6g")
+        satir += len(parca)
+        kurulumlar.update(parca["kurulum"].unique().tolist())
+        t = pd.to_datetime(parca["tarih"], errors="coerce")
+        ilk_tarih = min(x for x in (ilk_tarih, t.min()) if pd.notna(x))
+        son_tarih = max(x for x in (son_tarih, t.max()) if pd.notna(x))
+        for u in ufuklar:
+            for ad, sayac in ((f"kazanc_{u}g", dolu),
+                              (f"bariyer_{u}g", bariyer_dolu)):
+                if ad in parca.columns:
+                    sayac[f"{u}g"][0] += int(parca[ad].notna().sum())
+                    sayac[f"{u}g"][1] += len(parca)
+        sutunlar = list(parca.columns)
+        del parca
+        gc.collect()
+    del uzun
+    gc.collect()
+    gecici.unlink(missing_ok=True)
+
+    def _oran(sayac):
+        return {k: round(v[0] / v[1], 4) for k, v in sayac.items() if v[1]}
+
     return {
         "ok": True,
         "yol": str(p),
         "frekans": frekans,
-        "satir": int(len(tablo)),
+        "satir": satir,
         "hisse": islenen,
         "hatali": hatali,
-        "kurulum": int(tablo["kurulum"].nunique()),
-        "tarih_araligi": [str(tablo["tarih"].min())[:10],
-                          str(tablo["tarih"].max())[:10]],
-        "ozellikler": [c for c in tablo.columns
+        "kurulum": len(kurulumlar),
+        "tarih_araligi": [str(ilk_tarih)[:10], str(son_tarih)[:10]],
+        "ozellikler": [c for c in sutunlar
                        if c not in ("ticker", "tarih", "zaman", "kurulum",
                                     "yon", "frekans")
                        and not c.startswith(("fazla_", "kazanc_", "bariyer",
-                                             "akran_"))],
+                                             "akran"))],
         "capraz": capraz_bilgi,
-        "etiketler": [c for c in tablo.columns
+        "etiketler": [c for c in sutunlar
                       if c.startswith(("fazla_", "kazanc_", "bariyer",
-                                       "akran_"))],
-        "bariyer_oran": {
-            f"{u}g": round(float(tablo[f"bariyer_{u}g"].notna().mean()), 4)
-            for u in ufuklar if f"bariyer_{u}g" in tablo.columns},
-        "etiketli_oran": {
-            f"{u}g": round(float(tablo[f"kazanc_{u}g"].notna().mean()), 4)
-            for u in ufuklar},
+                                       "akran"))],
+        "bariyer_oran": _oran(bariyer_dolu),
+        "etiketli_oran": _oran(dolu),
     }
 
 
