@@ -61,8 +61,24 @@ df = barlar()
 F = gs.olustur(df)
 check("plenty of features", F.shape[1] >= 70, f"{F.shape[1]} columns")
 check("one row per bar", len(F) == len(df))
-check("no NaN", int(F.isna().sum().sum()) == 0)
 check("no inf", int(np.isinf(F.to_numpy()).sum()) == 0)
+
+# The long-memory columns are allowed to be blank while a stock is too young
+# to have the history, and nothing else is. Filling those with zero would be
+# worse than leaving them out: zero is a real momentum reading and would rank
+# the stock in the middle of its peers instead of excluding it.
+UZUN = {"roc63", "roc126", "roc252", "mom_12_1", "mom_6_1",
+        "tepe252_uzaklik", "dip252_uzaklik", "oynaklik60", "oynaklik120",
+        "dusus_oynaklik", "getiri_carpiklik", "en_iyi_gun21", "amihud",
+        "ma200_egim63", "hacim_trend"}
+bos = set(F.columns[F.isna().any()])
+check("only the long-memory columns are ever blank", bos <= UZUN,
+      f"also blank: {sorted(bos - UZUN)}")
+check("and they fill in once there is enough history",
+      int(F.iloc[300:].isna().sum().sum()) == 0,
+      f"{int(F.iloc[300:].isna().sum().sum())} blanks after bar 300")
+check("every long-memory column is present", UZUN <= set(F.columns),
+      f"missing: {sorted(UZUN - set(F.columns))}")
 check("names can be listed without real bars",
       len(gs.adlar()) == F.shape[1])
 check("index is preserved", bool((F.index == df.index).all()))
@@ -115,8 +131,10 @@ for k in ("Open", "High", "Low", "Close"):
 Fu, Fp = gs.olustur(ucuz).iloc[-1], gs.olustur(pahali).iloc[-1]
 kayan = []
 for sut in Fu.index:
-    if sut == "dolar_hacim" or sut.endswith("dolar_hacim"):
-        continue                      # log of price*volume, expected to shift
+    # Amihud is price impact per dollar traded, so a dollar amount is the
+    # whole point of it -- it belongs with dollar volume, not with the ratios.
+    if sut in ("dolar_hacim", "amihud") or sut.endswith("dolar_hacim"):
+        continue                      # carries a unit on purpose
     a, b = float(Fu[sut]), float(Fp[sut])
     if abs(a - b) > max(1e-3, 0.01 * abs(a)):
         kayan.append((sut, round(a, 4), round(b, 4)))
@@ -128,7 +146,7 @@ bol = ucuz.copy()
 bol["Volume"] = bol["Volume"] * 100.0
 Fv = gs.olustur(bol).iloc[-1]
 hacim_kayan = [s for s in Fu.index
-               if not s.startswith("dolar")
+               if s != "amihud" and not s.startswith("dolar")
                and abs(float(Fu[s]) - float(Fv[s])) > max(1e-3,
                                                           0.01 * abs(float(Fu[s])))]
 check("100x the volume changes nothing but dollar volume",

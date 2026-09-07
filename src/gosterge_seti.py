@@ -38,6 +38,23 @@ def _oran(a, b):
                                                           np.nan, b) - 1.0)
 
 
+def _ham_oran(a, b):
+    """a/b - 1, but NaN stays NaN.
+
+    _oran above flattens missing values to zero because every column it
+    feeds is short enough that the warm-up is a handful of bars. The long
+    lookbacks below are a different case: a stock with 300 bars has no
+    twelve-month return at all, and calling that zero is a false number that
+    ranks it in the middle of its peers. NaN says "not enough history" and
+    the peer rank leaves the row out instead of inventing a value.
+    """
+    a = np.asarray(a, dtype=float)
+    b = np.asarray(b, dtype=float)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        out = a / np.where(np.abs(b) < 1e-12, np.nan, b) - 1.0
+    return np.where(np.isfinite(out), out, np.nan)
+
+
 def _egim(s: pd.Series, n: int) -> np.ndarray:
     """Percent change of a series over n bars — a slope you can compare."""
     return _oran(s.to_numpy(), s.shift(n).to_numpy())
@@ -195,6 +212,65 @@ def olustur(df: pd.DataFrame) -> pd.DataFrame:
     dar = (h.rolling(20).max() - l.rolling(20).min()) / c
     F["sikisma"] = _guvenli(
         (dar / dar.rolling(100, min_periods=30).median()).to_numpy())
+
+    # --- longer memory -----------------------------------------------------
+    # Everything above looks back a few weeks; the longest thing in the file
+    # is the 200-bar average. For a 21-day horizon that is the wrong end of
+    # the telescope. The cross-sectional effects that have actually held up
+    # over monthly horizons are all measured in months, and with 500 bars we
+    # could not have computed them without throwing away half the sample.
+    # Ten years of history is what makes this block affordable.
+    #
+    # These are the only columns here allowed to be NaN, and deliberately so
+    # -- see _ham_oran.
+    for n in (63, 126, 252):
+        F[f"roc{n}"] = _ham_oran(cn, c.shift(n).to_numpy())
+    # The trailing year with the most recent month cut out of it. The last
+    # month tends to reverse rather than continue, so leaving it in mixes two
+    # effects with opposite signs and cancels a good part of both.
+    F["mom_12_1"] = _ham_oran(c.shift(21).to_numpy(), c.shift(252).to_numpy())
+    F["mom_6_1"] = _ham_oran(c.shift(21).to_numpy(), c.shift(126).to_numpy())
+    # How close price is to where it has been over the past year.
+    F["tepe252_uzaklik"] = _ham_oran(
+        cn, h.rolling(252, min_periods=200).max().to_numpy())
+    F["dip252_uzaklik"] = _ham_oran(
+        cn, l.rolling(252, min_periods=200).min().to_numpy())
+
+    gd = c.pct_change()
+    for n in (60, 120):
+        F[f"oynaklik{n}"] = (gd.rolling(n, min_periods=int(n * 0.8))
+                             .std().to_numpy())
+    # Only the days that went against you. Two stocks can share a standard
+    # deviation and have completely different downside. The zero days stay in
+    # the average as zeros rather than being dropped -- a quiet stock with
+    # four down days in a quarter has low downside risk, and taking the
+    # deviation of just those four would say the opposite.
+    asagi = np.minimum(gd.to_numpy(), 0.0) ** 2
+    F["dusus_oynaklik"] = np.sqrt(
+        pd.Series(asagi, index=c.index)
+        .rolling(60, min_periods=48).mean().to_numpy())
+    F["getiri_carpiklik"] = gd.rolling(60, min_periods=40).skew().to_numpy()
+    # The single best day of the past month. A stock that just printed a
+    # lottery-sized day tends to give it back.
+    F["en_iyi_gun21"] = gd.rolling(21, min_periods=15).max().to_numpy()
+    # Amihud: how far the price moves per dollar traded. Higher means thinner.
+    # Logged because the raw number spans several orders of magnitude, and
+    # scaled up first so the log lands in a readable range.
+    etki = gd.abs() / np.maximum((c * v).to_numpy(), 1.0)
+    with np.errstate(divide="ignore", invalid="ignore"):
+        F["amihud"] = np.log(
+            etki.rolling(60, min_periods=40).mean().to_numpy() * 1e9 + 1e-9)
+    # Where the long average has been heading, as distinct from where price
+    # sits relative to it. Those are different questions and only one of them
+    # was being asked.
+    ma200 = ind.sma(c, 200)
+    F["ma200_egim63"] = _ham_oran(ma200.to_numpy(), ma200.shift(63).to_numpy())
+    # Is this name being traded more than it usually is, over a horizon that
+    # matches the label rather than over ten bars.
+    dv = (c * v)
+    F["hacim_trend"] = _ham_oran(
+        dv.rolling(21, min_periods=15).mean().to_numpy(),
+        dv.rolling(126, min_periods=100).mean().to_numpy())
 
     # --- candle patterns ---------------------------------------------------
     F.update(mum_kaliplari(o.to_numpy(), h.to_numpy(), l.to_numpy(),
