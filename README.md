@@ -873,6 +873,110 @@ a liquidity floor −0.484%, over ten years −0.671%. Each time the thing makin
 the number bigger turned out to be a selection effect, a leak, or too little
 data.
 
+### Asking about the whole market instead of the watchlist
+
+Everything above was measured on **setup rows** — the bars where one of the
+twelve detectors fired. That pool trails its peer group by 0.65% in liquid
+names, so the model was never picking good stocks; it was picking the least
+bad name out of a pool that was already bad, and the long-only number was
+largely a statement about the pool rather than about the ranking.
+
+Nothing required that. The peer ranks and the peer-demeaned label are already
+computed for every stock on every day — they have to be, that is what a peer
+rank is — and were then thrown away for all but a few thousand rows. Writing
+them out turns the question into "of the two thousand stocks trading today,
+which beat their sector over the next month". Sampled every fifth day, since
+at a 21-day horizon consecutive days are the same bet one day apart: 864,035
+rows over 2,029 stocks and 503 days.
+
+Three things had to be fixed on the way. The label moved from the group mean
+to the group median, because on 2018-07-05 one group averaged +5697% over the
+following 21 days while its median was +6.2% — one unadjusted corporate
+action handing every other name in that group a peer return of about minus
+five thousand percent. Twelve percent of (group, date) cells have their mean
+more than five points off their median. The peer group stopped being a
+feature, because the label already has the group mean removed and the dummies
+were nonetheless coming out on top of the feature table with t above 8 — the
+skew of a demeaned distribution read as skill. And the Newey-West lag now
+counts observations rather than trading days, which are the same thing only
+when there is one row per day.
+
+The result was the first ordered decile structure in the whole investigation.
+Horizon 21, 399 days, top decile net of 10bp:
+
+| Run | Top decile | t | Base | vs base | AUC | DV tilt |
+|---|---:|---:|---:|---:|---:|---:|
+| Cross-section, median label, ≥$5M | **+1.293%** | **+5.12** | +0.398% | +0.89% | 0.520 | 0.671 |
+| Null control (label shuffled) | +0.172% | +1.50 | +0.398% | −0.23% | 0.502 | 0.856 |
+| Floor at ≥$20M | +0.788% | +2.03 | +0.060% | +0.73% | 0.517 | 0.807 |
+| Mean label instead of median | −0.040% | −0.77 | −0.908% | +0.87% | 0.517 | 0.660 |
+
+Deciles ran −0.15, 0.00, −0.04, 0.08, 0.20, 0.31, 0.51, 0.78, 0.89, 1.39,
+monotone end to end, against a flat 0.30, 0.43, 0.46, 0.46, 0.42, 0.37, 0.35,
+0.49, 0.43, 0.27 under the null. Per-fold AUC 0.508, 0.516, 0.516, 0.533 —
+not one lucky fold. Top minus bottom +1.091%, t=+2.69, positive on 59% of
+days. The mean-label row shows what the label change did and did not do: the
+edge over base is essentially unchanged (+0.87% against +0.89%), only the
+levels were being dragged to −0.9% by outliers. The median label did not
+create the result, it made it readable.
+
+### And then: what was the edge made of
+
+Two answers arrived at the same place. Of 39 columns only four clear |t| ≥ 3
+on their own, and three of them measure the same axis: dollar volume
+(IC −0.0335, t −7.28), its peer rank (−0.0491, −6.16) and amihud (+0.0496,
++5.09). The fourth is five-day reversal (−0.0115, −3.16).
+
+The second answer came from a baseline with nothing to tune, which now runs
+beside the net: take the columns that stand up on their own in the training
+fold, flip the ones pointing the wrong way, average their ranks. It matches
+the net (+1.207%, t=5.60 against +1.293%, t=5.12), so three layers, dropout,
+early stopping and a five-seed ensemble are buying nothing. And across all
+four folds it selects the same three columns every time — dollar volume, its
+rank, and amihud. Everything else is fold-specific; fold one's momentum
+columns never appear again.
+
+So the axis came out. `--ozellik-disla dolar_hacim,amihud` hides those columns
+from the model while the tilt diagnostic keeps reporting them, which leaves
+"did the picks still lean thin without being told which names are thin"
+answerable:
+
+| | Top decile | t | vs base | DV tilt |
+|---|---:|---:|---:|---:|
+| With the liquidity columns | +1.293% | +5.12 | +0.89% | 0.671 |
+| **Without them** | **+0.206%** | **+1.01** | **−0.19%** | **1.001** |
+
+The tilt goes to 1.001 — with nothing telling it which names are thin, the
+model stops leaning that way entirely. And the deciles do not merely flatten,
+they invert: 0.58, 0.57, 0.52, 0.38, 0.37, 0.37, 0.37, 0.28, 0.23, 0.31. The
+lowest-scored decile earns the most.
+
+All of the +1.293% was the liquidity axis, and in this dataset that axis
+cannot be separated from survivorship: the cache holds companies still listed
+today, the ones that quietly died were mostly small, and the gradient measured
+earlier — thinnest quintile +1.59%, most liquid −1.55% — is exactly the shape
+survivorship produces.
+
+### The part that came up empty
+
+Fifteen long-memory columns were added for this round: 3/6/12-month returns,
+12-1 and 6-1 momentum with the last month cut out, distance from the 52-week
+high and low, long and downside volatility, return skew, the best day of the
+past month, amihud, the slope of the 200-day average, and volume against its
+own quarter. The reasoning was sound — the longest lookback in the file was a
+200-bar average, and the cross-sectional effects documented at monthly
+horizons are all measured in months.
+
+Not one of them worked. All fifteen come in at |t| < 1 on within-day rank
+correlation. Twelve-minus-one momentum, the most documented cross-sectional
+effect there is, scores IC +0.0041 with t = +0.49 in this universe over this
+decade. They are still in the file, because an absence measured is worth
+keeping, but nothing rests on them.
+
+What survives is five-day reversal, the one non-liquidity column above
+|t| ≥ 3, stable in the later folds. Real, small, and reversal is precisely the
+strategy transaction costs eat first.
+
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
 ---

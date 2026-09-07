@@ -1023,6 +1023,175 @@ veriydi; düzeltildiğinde kenar gitti.
 
 ---
 
+## Kesite geçmek — ve kenarın gerçekten neye yaslandığı (07.09.2026)
+
+Buraya kadar her ölçüm **kurulum satırları** üzerindeydi: on iki dedektörden
+biri ateşlediğinde oluşan barlar. O havuzun akran-göreli tabanı likit
+isimlerde **−%0.649**. Yani model hiçbir zaman iyi hisse seçmiyordu; zaten
+kötü olan bir havuzun içinden en az kötüyü seçiyordu, ve uzun-only sayı
+büyük ölçüde havuz hakkında bir cümleydi.
+
+Bunu gerektiren hiçbir şey yoktu. Akran sıralamaları ve akran-arındırılmış
+etiket zaten her hisse için her gün hesaplanıyordu — hesaplanmak zorundaydı,
+akran sıralaması bu demek — ve birkaç bin satır dışında hepsi atılıyordu.
+`capraz_yaz` onları kendi tablosu olarak yazıyor; soru "bugün işlem gören iki
+bin hisseden hangileri önümüzdeki ay sektörünü geçer" hâline geliyor.
+
+21 günlük ufukta ardışık günler aynı bahsin bir gün kaymış hâli olduğu için
+her 5. gün tutuluyor: **864.035 satır · 2.029 hisse · 503 gün**, on yıl.
+
+### Yol boyunca düzeltilen üç şey
+
+**Etiket, grup ortalamasından medyanına geçti.** 2018-07-05'te bir akran
+grubunun 21 günlük ortalama fazla getirisi **+%5697**, medyanı **+%6.2**
+çıkıyordu — QUBT'nin düzeltilmemiş bir hareketi. Etiket "fazla getiri eksi
+grup ortalaması" olduğu için o gün o gruptaki *diğer her hisse* −%5697
+etiketi alıyordu. Hücrelerin **%12.6'sında** ortalama medyandan beş puandan
+fazla sapıyor. `akranmed_{N}g` medyana göre; ikisi de yazılıyor, çünkü etiket
+değiştirmek aşağıdaki her sayıyı değiştirir ve bunun ayrı ölçülmesi gerekir.
+
+**Grup kimliği özellik olmaktan çıkarıldı.** Etiketin grup ortalaması zaten
+alınmış, dolayısıyla bir grup kuklasının tanım gereği tahmin edecek bir şeyi
+yok. Yine de verildiğinde kuklalar özellik tablosunun tepesine t>8 ile
+çıktı: demean edilmiş bir dağılımın çarpıklığı beceri diye okunuyordu.
+
+**Newey-West gecikmesi gözlem sayar oldu, işlem günü değil.** İkisi ancak
+günde bir satır varken aynı şeydir; her 5. günü tutan tabloda 21 günlük ufuk
+beş satıra yayılır ve 21 kullanmak hata payını dört katına çıkarırdı. Günlük
+tablodaki davranış değişmedi.
+
+### Sonuç: dilimler ilk kez sıralanıyor
+
+Ufuk 21, 399 gün, %10'luk üst dilim, 10bp maliyet düşülmüş:
+
+| Koşu | Üst dilim | t | Taban | Tabana göre | AUC | DV eğilimi |
+|---|---:|---:|---:|---:|---:|---:|
+| Kesit, medyan etiket, ≥$5M | **+1.293%** | **+5.12** | +0.398% | +0.89% | 0.520 | 0.671 |
+| Null kontrol (etiket karıştırıldı) | +0.172% | +1.50 | +0.398% | −0.23% | 0.502 | 0.856 |
+| Taban ≥$20M | +0.788% | +2.03 | +0.060% | +0.73% | 0.517 | 0.807 |
+| Ortalama etiket (medyan yerine) | −0.040% | −0.77 | −0.908% | +0.87% | 0.517 | 0.660 |
+
+Dilimler uçtan uca monoton — bu araştırmada ilk kez:
+
+```
+-0.15  0.00  -0.04  0.08  0.20  0.31  0.51  0.78  0.89  1.39
+```
+
+Null kontrolde tamamen düz (`0.30 0.43 0.46 0.46 0.42 0.37 0.35 0.49 0.43
+0.27`), AUC 0.502, üst−alt farkı −%0.238. Katman AUC'leri 0.508 / 0.516 /
+0.516 / 0.533 — tek şanslı katman değil. Üst−alt farkı +%1.091, t=+2.69,
+günlerin %59'unda pozitif.
+
+Ortalama etiket satırı, etiket değişikliğinin ne yapıp ne yapmadığını
+gösteriyor: tabana göre kenar neredeyse aynı (+%0.87'ye karşı +%0.89), ama
+seviyeler aykırı değerlerce −%0.9'a çekilmiş. Medyan etiket kenarı
+**yaratmadı**, ölçümü okunur hâle getirdi.
+
+### Ama kenar neydi
+
+Bu noktada sayı iyiydi. Asıl soru, üç turdur olduğu gibi, yine "model **neyi**
+seçiyor" idi. İki cevap aynı yere çıktı.
+
+**Birincisi, kendi başına duran özellikler.** 39 sütundan yalnızca dördü
+|t|≥3 veriyor ve üçü aynı ekseni ölçüyor:
+
+```
+dolar_hacim      IC -0.0335   t -7.28
+x_dolar_hacim    IC -0.0491   t -6.16
+x_amihud         IC +0.0496   t +5.09
+x_roc5           IC -0.0115   t -3.16     <- tek istisna
+```
+
+**İkincisi, düz ortalamanın seçtikleri.** Ağın yanında ayarlanacak hiçbir
+şeyi olmayan bir temel çizgi çalışıyor: eğitim katmanında kendi başına duran
+sütunları bul, ters bakanları çevir, sıralamalarını ortala. Getirisi ağınkine
+eşit (+%1.207 / t=5.60'a karşı +%1.293 / t=5.12) — yani üç katman, dropout,
+erken durdurma ve beş tohumlu topluluk hiçbir şey kazandırmıyor. Ve dört
+katmanın **dördünde de** yalnızca şu üçü ortak:
+
+```
+kat 1: +x_roc126, +x_mom_6_1, +x_dip252_uzaklik, -dolar_hacim, -x_dolar_hacim,
+       +x_amihud, +x_ma200_egim63, +x_roc252, +x_mom_12_1, ...
+kat 2: -dolar_hacim, -x_dolar_hacim, +x_adx, +x_amihud, +x_ma200_egim63
+kat 3: -dolar_hacim, -x_dolar_hacim, +x_amihud, -x_roc5, -x_roc10, -x_ma20_uzaklik
+kat 4: -dolar_hacim, -x_dolar_hacim, +x_amihud, -x_roc5, -x_roc10, ...
+```
+
+Gerisi katmana özel — birinci katmanın bütün momentum sütunları bir daha hiç
+görünmüyor.
+
+### Belirleyici test: ekseni al, ne kalıyor
+
+`--ozellik-disla dolar_hacim,amihud` bu sütunları modele hiç vermiyor; eğilim
+tanısı onları yine de raporluyor, yani "söylenmediğinde de ince isimlere
+yaslanıyor mu" sorusu cevaplanabilir kalıyor.
+
+| | Üst dilim | t | Tabana göre | DV eğilimi |
+|---|---:|---:|---:|---:|
+| Likidite sütunları var | +1.293% | +5.12 | +0.89% | 0.671 |
+| **Yok** | **+0.206%** | **+1.01** | **−0.19%** | **1.001** |
+
+Eğilim oranı 0.671'den **1.001**'e gidiyor: söylenmediğinde model ince
+isimlere hiç yaslanmıyor. Ve dilimler yalnızca düzleşmiyor, **tersine
+dönüyor**:
+
+```
+0.58  0.57  0.52  0.38  0.37  0.37  0.37  0.28  0.23  0.31
+```
+
+En düşük puanlanan dilim en çok kazanıyor. Üst−alt farkı −%0.422.
+
+**Yani +%1.293'ün tamamı likidite ekseniydi.** Ve bu veri kümesinde likidite
+ekseni hayatta kalma yanlılığından ayrılamıyor: önbellek bugün kote olan
+şirketleri tutuyor, sessizce ölenlerin çoğu küçüktü, ve bir önceki turda
+ölçülen gradyan (en ince beşte bir +%1.59, en likit −%1.55) tam da hayatta
+kalma yanlılığının ürettiği şekil. İkisi içeriden aynı görünüyor; ayıran tek
+şey ekseni almaktı ve alındığında geriye bir şey kalmadı.
+
+### Boş çıkan taraf: uzun hafıza
+
+Bu tur için gösterge setine on beş uzun-hafıza sütunu eklendi — 3/6/12 aylık
+getiri, son ayı çıkarılmış 12-1 ve 6-1 momentum, 52 hafta tepe/dip uzaklığı,
+uzun ve düşüş oynaklığı, getiri çarpıklığı, ayın en iyi günü, Amihud etkisi,
+200 günlük ortalamanın eğimi, hacmin kendi çeyreğine oranı. Gerekçe sağlamdı:
+en uzun geriye bakış 200 barlık ortalamaydı ve 21 günlük ufukta literatürdeki
+kesitsel etkiler ay ölçeğinde.
+
+**Hiçbiri tutmadı.** Gün içi sıra korelasyonunda on beşinin de |t|<1:
+
+```
+x_en_iyi_gun21   -0.0088  -0.98      x_mom_12_1       +0.0041  +0.49
+x_ma200_egim63   +0.0085  +0.98      x_dip252_uzaklik +0.0050  +0.49
+x_getiri_carpiklik -0.0045 -0.90     x_tepe252_uzaklik +0.0045 +0.45
+x_mom_6_1        +0.0050  +0.66      x_roc126         +0.0021  +0.27
+x_roc63          -0.0047  -0.57      x_roc252         +0.0009  +0.11
+```
+
+12-1 momentum — kesitsel literatürün en çok belgelenmiş etkisi — bu evrende
+ve bu dönemde IC +0.0041, t=+0.49. Kazanç momentumdan gelmiyor. Sütunlar
+kaldı çünkü yokluklarını göstermek de bir ölçüm, ama hiçbirini taşımıyorlar.
+
+### Geriye kalan tek dürüst pozitif
+
+`x_roc5`: kısa vadeli tersine dönüş. IC −0.0115, t=−3.16, 399 gün, üçüncü ve
+dördüncü katmanda düz ortalamanın seçtikleri arasında. Likidite dışında
+|t|≥3'ü geçen tek sütun. Gerçek ama küçük — tek başına 10bp'yi karşılamıyor,
+ve tersine dönüş tam da işlem maliyetinin en çok yediği stratejidir.
+
+### Bu turun cevabı
+
+Oran yükseltilemedi. Kesite geçmek doğru soruydu ve ilk kez sıralı bir dilim
+yapısı üretti; ama o sıralamanın tamamı, işlem yapılabilirliği ölçtüğümüz
+eksende duruyor ve o eksen elimizdeki veriyle hayatta kalma yanlılığından
+ayrılamıyor.
+
+Kalıcı olarak eklenenler: kesit tablosu ve `--kaynak capraz`, medyan akran
+etiketi, üst−alt farkı, özellik bazında IC tablosu, düz ortalama temel
+çizgisi, `--ozellik-disla`. Sonuncusu bu turu bitiren testti; ilk üçü olmadan
+sayı iyi görünüyordu ve neden iyi göründüğü görünmüyordu.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
@@ -1034,6 +1203,14 @@ veriydi; düzeltildiğinde kenar gitti.
   kayma düşülmemiş. İnce likiditede bu fark, ölçülen kenardan büyük olabilir.
 - **Kapanış fiyatından giriş varsayılıyor**: sinyal kapanışta oluşuyor, giriş
   de kapanışta sayılıyor. Gerçekte ertesi açılışa kalır.
+- **Ağ, düz ortalamayı geçmiyor.** Üç katman, dropout, erken durdurma ve beş
+  tohumlu topluluk, ayarlanacak hiçbir şeyi olmayan bir eşit-ağırlık
+  ortalamasıyla aynı getiriyi veriyor (+%1.207 / t=5.60'a karşı +%1.293 /
+  t=5.12), $20M evreninde ondan geride kalıyor (+%1.075 / t=3.20'ye karşı
+  +%0.788 / t=2.03). Bu evrende ve bu ufukta cevap daha çok parametre değil.
+- **Akran-göreli etiket cebe girmez.** `akranmed_{N}g` "grubunun medyanını ne
+  kadar geçti" ölçer; uzun-only bir portföy ham getiri kazanır. Cebe giren
+  yakın karşılık üst−alt farkıdır.
 - **Hayatta kalma yanlılığı ölçüldü ama giderilemedi**: kote dışı kalmış
   hisselerin barları elde yok. Mikro-kap bandındaki fazla getirinin ne
   kadarının bundan geldiği bilinmiyor; yalnızca yönü ve büyüklüğü belli.
