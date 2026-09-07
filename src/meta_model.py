@@ -102,9 +102,16 @@ def panel_yukle(frekans: str = "1d",
     tipler = {c: np.float32 for c in basliklar
               if c not in metin
               and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran"))}
-    df = pd.read_csv(p, dtype=tipler)
-    if "tarih" in df.columns:
-        df["tarih"] = pd.to_datetime(df["tarih"], errors="coerce")
+    # The text columns were the larger half of the bill. Ticker, setup name,
+    # frequency and side repeat down hundreds of thousands of rows, and as
+    # Python strings that is a pointer plus an object each -- more than every
+    # indicator put together. As categories it is one byte a row.
+    tipler.update({c: "category" for c in ("ticker", "frekans", "kurulum",
+                                           "yon") if c in basliklar})
+    tarihler = [c for c in ("tarih", "zaman") if c in basliklar]
+    df = pd.read_csv(p, dtype=tipler, parse_dates=tarihler)
+    if "tarih" not in df.columns:
+        return df
     return df.dropna(subset=["tarih"])
 
 
@@ -1158,9 +1165,16 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
 
     sonuc = []
     pencere_ozet = None
-    for u in ufuklar:
+    panel_satir = int(len(df))
+    son_ufuk = len(ufuklar) - 1
+    for sira_no, u in enumerate(ufuklar):
         veri = hazirla(df, u, etiket, karistir=karistir,
                        siralama=siralama, disla=disla)
+        if sira_no == son_ufuk and not dizi:
+            # Nothing reads the panel after the last horizon has been
+            # prepared, and training is where the memory actually goes.
+            df = None
+            gc.collect()
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
@@ -1241,7 +1255,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "kaynak": kaynak,
         "disla": list(disla),
         "ok": any(r.get("ok") for r in sonuc),
-        "panel_satir": int(len(df)),
+        "panel_satir": panel_satir,
         "evren": evren,
         "kalibrasyon": (kalib or {}).get("generated_at"),
         "ufuklar": list(ufuklar),
