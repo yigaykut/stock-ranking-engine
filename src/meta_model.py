@@ -74,8 +74,8 @@ def cikti_yolu(frekans: str, dizi: bool = False,
 # =============================================================================
 #  Veri
 # =============================================================================
-def panel_yukle(frekans: str = "1d",
-                kaynak: str = "sinyal") -> pd.DataFrame | None:
+def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
+                min_hacim: float = 0.0) -> pd.DataFrame | None:
     """Signal rows, or the whole cross-section.
 
     "sinyal" is the table of bars where one of the twelve detectors fired.
@@ -109,7 +109,20 @@ def panel_yukle(frekans: str = "1d",
     tipler.update({c: "category" for c in ("ticker", "frekans", "kurulum",
                                            "yon") if c in basliklar})
     tarihler = [c for c in ("tarih", "zaman") if c in basliklar]
-    df = pd.read_csv(p, dtype=tipler, parse_dates=tarihler)
+    # The liquidity floor is applied while reading rather than after. Half
+    # the rows are about to be thrown away and there is no reason to have
+    # built them first; on this machine the difference decided whether the
+    # run finished at all.
+    if min_hacim > 0 and "dolar_hacim" in basliklar:
+        tutulan = []
+        for parca in pd.read_csv(p, dtype=tipler, parse_dates=tarihler,
+                                 chunksize=200_000):
+            tutulan.append(parca[parca["dolar_hacim"] >= min_hacim])
+        df = pd.concat(tutulan, ignore_index=True, copy=False)
+        tutulan.clear()
+        gc.collect()
+    else:
+        df = pd.read_csv(p, dtype=tipler, parse_dates=tarihler)
     if "tarih" not in df.columns:
         return df
     return df.dropna(subset=["tarih"])
@@ -1128,7 +1141,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     from . import kalibrasyon as kb
     from . import kisa_vade as kv
 
-    df = panel_yukle(frekans, kaynak=kaynak)
+    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim)
     if df is None or df.empty:
         return {"ok": False,
                 "reason": f"panel yok — once: python run.py kisa panel "
@@ -1145,8 +1158,13 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     # that lives only down there is not an edge you could have traded.
     evren = None
     if min_hacim > 0 and "dolar_hacim" in df.columns:
-        once = len(df)
-        df = df[pd.to_numeric(df["dolar_hacim"], errors="coerce") >= min_hacim]
+        # panel_yukle already dropped the rows below the floor while reading;
+        # this only records what the universe became. "once" is read back off
+        # the file so the summary still says what it was cut from.
+        once = sum(1 for _ in open(kb.capraz_yolu(frekans)
+                                   if kaynak == "capraz"
+                                   else kb.panel_yolu(frekans),
+                                   encoding="utf-8")) - 1
         evren = {"min_hacim": float(min_hacim), "once": once, "sonra": len(df),
                  "hisse": int(df["ticker"].nunique()) if len(df) else 0}
         if len(df) < MIN_SATIR:
