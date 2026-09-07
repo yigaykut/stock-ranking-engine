@@ -512,6 +512,69 @@ check("the label still varies inside a group",
       float(cx[cx.grup == "A"]["akran_5g"].std()) > 0.01)
 
 print()
+print("=" * 72)
+print("12) THE CROSS-SECTION AS ITS OWN TABLE")
+print("=" * 72)
+
+# The signal panel only holds bars where a detector fired, and those rows
+# trail their peer group on average -- so a model trained on them is choosing
+# the least bad name in an already bad pool. The same ranks and the same peer
+# label exist for every stock on every day; this writes them out so the model
+# can be asked the wider question instead.
+kod = {f"{g_}{i}": n for n, (g_, i)
+       in enumerate([(g2, i2) for g2 in ("A", "B") for i2 in range(10)])}
+uzun2 = uzun.copy()
+uzun2["tk"] = uzun2["ticker"].map(kod).astype("int32")
+uzun2["grup"] = uzun2["grup"].map({"A": 0, "B": 1}).astype("int16")
+# Dollar volume rides along as a log, because that is the form the indicator
+# set produces; the liquidity floor downstream is a plain dollar amount and
+# has to get one back.
+uzun2["g_dolar_hacim"] = np.log(3_000_000.0)
+uzun2 = uzun2.drop(columns=["ticker"])
+cx2 = kb.capraz_kesit(uzun2, (5,))
+
+with tempfile.TemporaryDirectory() as td:
+    hedef = Path(td) / "capraz.csv"
+    ozet = kb.capraz_yaz(cx2, kod, (5,), frekans="1d", adim=5, yol=hedef)
+    check("a table was written", ozet.get("ok") and hedef.exists(), str(ozet))
+    t = pd.read_csv(hedef)
+
+    check("names came back from the codes",
+          set(t["ticker"].unique()) == set(kod), str(sorted(t["ticker"].unique())[:4]))
+    check("every stock appears on every kept day",
+          t.groupby("tarih")["ticker"].nunique().eq(20).all(),
+          str(t.groupby("tarih")["ticker"].nunique().unique()))
+    check("one row in five survives the sampling",
+          len(t) == 20 * len(zaman[::5]), f"{len(t)} rows")
+    check("the days kept are evenly spaced",
+          sorted(pd.to_datetime(t["tarih"]).unique().tolist())
+          == list(zaman[::5]))
+
+    # The model side keys off these; a missing one silently changes a path.
+    check("the identity columns the model expects are all there",
+          {"ticker", "tarih", "zaman", "frekans", "kurulum", "yon"}
+          <= set(t.columns),
+          str(sorted({"ticker", "tarih", "zaman", "frekans", "kurulum", "yon"}
+                     - set(t.columns))))
+    check("the peer rank columns came through",
+          sum(c.startswith("x_") for c in t.columns) >= 2)
+    check("the peer label came through", "akran_5g" in t.columns)
+
+    # A log of dollars is not dollars, and the liquidity floor compares
+    # against a raw figure. Getting this wrong would filter out everything or
+    # nothing, and either way say nothing about it.
+    dv = float(t["dolar_hacim"].median())
+    check("dollar volume is written in dollars, not as a log",
+          abs(dv - 3_000_000.0) < 1_000.0, f"{dv:,.0f}")
+    check("the binary label agrees with the sign of the return",
+          bool((t["kazanc_5g"] == (t["fazla_5g"] > 0).astype(float)).all()))
+
+    hepsi = kb.capraz_yaz(cx2, kod, (5,), frekans="1d", adim=1,
+                          yol=Path(td) / "hepsi.csv")
+    check("adim=1 keeps every day", hepsi["satir"] == 20 * len(zaman),
+          str(hepsi["satir"]))
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

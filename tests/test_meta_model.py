@@ -219,6 +219,20 @@ check("the lag follows the horizon", genis["gecikme"] == 63,
 check("overlap widens the error bar", abs(genis["t_nw"]) < abs(dar["t_nw"]),
       f"t {dar['t_nw']} with lag 1 -> {genis['t_nw']} with lag 63")
 
+# The lag counts OBSERVATIONS, and observations are only trading days when
+# the table has one row per trading day. The cross-section table keeps every
+# fifth day, so the same 21-day horizon spans about five of its rows; using
+# 21 there would widen the standard error four-fold and bury a real result
+# under a unit mistake.
+isgunu = pd.date_range("2024-01-03", periods=300, freq="B")
+check("daily rows: the lag is the horizon", mm._ortusme(isgunu, 21) == 21)
+check("every fifth day: the lag is a fifth of it",
+      mm._ortusme(isgunu[::5], 21) == 5, str(mm._ortusme(isgunu[::5], 21)))
+check("a longer horizon scales with it",
+      mm._ortusme(isgunu[::5], 63) == 13, str(mm._ortusme(isgunu[::5], 63)))
+check("too few dates to measure spacing falls back to the horizon",
+      mm._ortusme(isgunu[:2], 21) == 21)
+
 print()
 print("=" * 72)
 print("7) A FEW HUGE ROWS CANNOT CARRY THE AVERAGE")
@@ -303,6 +317,92 @@ gun_kaymasi = pd.Series(np.arange(2000) // 50).to_numpy() * 3.0
 check("a day-level offset changes nothing",
       abs(mm.gunluk_ic(h + gun_kaymasi, h, gun5) - 1.0) < 1e-9,
       "pooled correlation would be dominated by the offset")
+
+print()
+print("=" * 72)
+print("10) TOP MINUS BOTTOM SEPARATES THE ORDER FROM THE POOL")
+print("=" * 72)
+
+# Buying the top decile buys whatever the pool as a whole was doing, and in
+# the real panel the pool loses to its peer group by about 0.65%. So a
+# long-only number is partly a statement about the pool and only partly about
+# the model, and the two move independently -- the pool can sink the result
+# while the ordering is fine, or carry it while the ordering is worthless.
+# The spread cancels the pool and leaves the ordering.
+r3 = np.random.default_rng(11)
+n3 = 12000
+gun3 = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=120), 100))
+skor = r3.normal(0, 1, n3)
+# A real ordering, sitting inside a pool that loses 3% no matter what.
+getiri3 = 0.004 * skor + r3.normal(0, 0.02, n3) - 0.03
+
+d10 = mm.dilim_getirisi(skor, getiri3, gun3, maliyet_bp=0.0, ufuk_gun=1)
+ua = d10.get("ust_alt")
+check("the spread is reported", ua is not None)
+check("long only inherits the pool's loss", d10["getiri"] < 0,
+      f"%{100 * d10['getiri']:.2f}")
+check("the spread does not", ua["getiri"] > 0, f"%{100 * ua['getiri']:.2f}")
+check("and it is significant when the ordering is real",
+      ua["t_nw"] is not None and ua["t_nw"] > 3, str(ua["t_nw"]))
+
+# Move the whole pool and the spread must not budge.
+kaydirilmis = mm.dilim_getirisi(skor, getiri3 + 0.10, gun3, maliyet_bp=0.0,
+                                ufuk_gun=1)
+check("shifting every return leaves the spread alone",
+      abs(kaydirilmis["ust_alt"]["getiri"] - ua["getiri"]) < 1e-9,
+      "a long-only number would have moved by 10 points")
+check("the long-only number does move",
+      abs(kaydirilmis["getiri"] - d10["getiri"]) > 0.09)
+
+# Two legs, two lots of costs.
+maliyetli = mm.dilim_getirisi(skor, getiri3, gun3, maliyet_bp=25.0, ufuk_gun=1)
+dusen = ua["getiri"] - maliyetli["ust_alt"]["getiri"]
+check("costs come off both legs", abs(dusen - 0.005) < 1e-6,
+      f"{10000 * dusen:.0f}bp taken off for a 25bp round trip")
+
+# No ordering, no spread.
+bos = mm.dilim_getirisi(r3.normal(0, 1, n3), getiri3, gun3, maliyet_bp=0.0,
+                        ufuk_gun=1)
+check("noise produces no spread", abs(bos["ust_alt"]["getiri"]) < 0.002,
+      f"%{100 * bos['ust_alt']['getiri']:.3f}")
+
+print()
+print("=" * 72)
+print("11) EACH FEATURE ON ITS OWN")
+print("=" * 72)
+
+# One number out of the model cannot say which of a hundred and forty columns
+# it is reading, or whether it is reading any of them. This asks each column
+# directly, and the point of the test is that it can tell them apart.
+r4 = np.random.default_rng(21)
+n4 = 30000
+gun4 = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=150), 200))
+gercek = r4.normal(0, 1, n4)
+gurultu = r4.normal(0, 1, n4)
+# A column that only moves with the day, not between names on that day. The
+# pooled correlation would love it; it is worthless for picking a stock.
+gunluk_kayma = np.repeat(r4.normal(0, 1, 150), 200)
+sonuc4 = 0.003 * gercek + 0.02 * gunluk_kayma + r4.normal(0, 0.015, n4)
+
+X4 = np.column_stack([gercek, gurultu, gunluk_kayma]).astype(np.float32)
+ic = {x["ozellik"]: x for x in
+      mm.ozellik_ic(X4, ["gercek", "gurultu", "gunluk"], sonuc4, gun4,
+                    ufuk_gun=1)}
+
+check("the real feature is found", ic["gercek"]["t_nw"] > 5,
+      f"IC {ic['gercek']['ic']:.3f}, t {ic['gercek']['t_nw']}")
+check("noise is not", abs(ic["gurultu"]["t_nw"]) < 3,
+      f"t {ic['gurultu']['t_nw']}")
+check("a day-level driver scores nothing within the day",
+      "gunluk" not in ic or abs(ic["gunluk"]["t_nw"]) < 3,
+      "it explains the whole return but says nothing about which name to buy")
+check("the strongest comes first", list(ic)[0] == "gercek",
+      str(list(ic)))
+check("a dead column is skipped, not reported as zero",
+      len(mm.ozellik_ic(np.zeros((n4, 1), dtype=np.float32), ["sabit"],
+                        sonuc4, gun4)) == 0)
+check("too few days means no answer rather than a bad one",
+      mm.ozellik_ic(X4[:400], ["a", "b", "c"], sonuc4[:400], gun4[:400]) == [])
 
 print()
 if fails:

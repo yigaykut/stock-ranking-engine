@@ -188,10 +188,23 @@ CAPRAZ_OZELLIKLER = (
     "g_rsi7", "g_rsi14", "g_roc5", "g_roc10", "g_roc20",
     "g_ma20_uzaklik", "g_ma50_uzaklik", "g_ma200_uzaklik",
     "g_atr14", "g_bb_pct", "g_bb_genislik",
-    "g_hacim10", "g_hacim50", "g_yukari_hacim_pay",
+    "g_hacim10", "g_hacim50", "g_yukari_hacim_pay", "g_dolar_hacim",
     "g_adx", "g_di_fark",
     "g_tepe20_uzaklik", "g_dip20_uzaklik", "g_donchian20", "g_sikisma",
+    # The long-memory block. These are the ones where the peer comparison is
+    # the whole point -- "up 40% over the year" means nothing until you know
+    # the rest of the sector is up 60%.
+    "g_roc63", "g_roc126", "g_roc252", "g_mom_12_1", "g_mom_6_1",
+    "g_tepe252_uzaklik", "g_dip252_uzaklik",
+    "g_oynaklik60", "g_oynaklik120", "g_dusus_oynaklik",
+    "g_getiri_carpiklik", "g_en_iyi_gun21", "g_amihud",
+    "g_ma200_egim63", "g_hacim_trend",
 )
+
+# Kept in raw form after ranking: the liquidity floor is a dollar amount and
+# the tilt diagnostic reports medians, and neither question can be asked of a
+# percentile.
+TUTULAN_HAM = ("g_ma200_uzaklik", "g_atr14", "g_dolar_hacim")
 
 
 def _hafiflet(df: pd.DataFrame) -> pd.DataFrame:
@@ -207,6 +220,88 @@ def _hafiflet(df: pd.DataFrame) -> pd.DataFrame:
         if df[c].dtype == np.float64:
             df[c] = df[c].astype(np.float32)
     return df
+
+
+def capraz_yolu(frekans: str) -> Path:
+    return DATA / f"kisa_vade_capraz_{frekans}.csv"
+
+
+def capraz_yaz(uzun: pd.DataFrame, tk_kod: dict, ufuklar,
+               frekans: str = "1d", adim: int = 5,
+               yol: Path | None = None) -> dict:
+    """The whole cross-section as its own training table.
+
+    The panel next to this one holds only the bars where one of the twelve
+    detectors fired, and that turned out to matter more than anything else in
+    the model: those rows lose to their peer group by 0.65% on average, so
+    every version of the model has been picking the least bad name out of a
+    pool that was already bad. Nothing in the design says it has to be. The
+    ranks and the peer-demeaned label are computed over every stock on every
+    day regardless -- they have to be, that is what a peer rank is -- and then
+    thrown away for all but a few thousand rows.
+
+    So this writes them out. The question the model gets asked becomes "of the
+    two thousand stocks trading today, which ones beat their sector over the
+    next month", which is the question a cross-sectional model can answer and
+    the one the plan set out to ask.
+
+    Sampled every `adim` trading days. At a 21-day horizon consecutive days
+    are the same bet with one day of drift between them; keeping all of them
+    multiplies the file by five and adds no independent information.
+    """
+    if uzun.empty:
+        return {"ok": False, "reason": "capraz kesit bos"}
+    ters = {v: k for k, v in (tk_kod or {}).items()}
+    tablo = uzun
+    gun = _zaman_indeks(tablo["zaman"]).normalize()
+    if adim and adim > 1:
+        secili = np.unique(gun.to_numpy())[::int(adim)]
+        tut = np.isin(gun.to_numpy(), secili)
+        tablo = tablo.loc[tut].copy()
+        gun = gun[tut]
+    else:
+        tablo = tablo.copy()
+
+    tablo.insert(0, "ticker", tablo["tk"].map(ters))
+    tablo.insert(1, "tarih", gun)
+    tablo.insert(3, "frekans", frekans)
+    # The model side keys off these two and the whole cross-section is one
+    # bucket, so they are constants here rather than absent -- an absent
+    # column would change a code path, a constant one cannot.
+    tablo.insert(4, "kurulum", "tum")
+    tablo.insert(5, "yon", "long")
+    # Raw names the rest of the system already knows, so the liquidity floor
+    # and the tilt report work on this table without special-casing it.
+    if "g_dolar_hacim" in tablo.columns:
+        tablo["dolar_hacim"] = np.exp(
+            tablo["g_dolar_hacim"].to_numpy(dtype=np.float64)).astype(np.float32)
+    if "g_atr14" in tablo.columns:
+        tablo["atr_pct"] = tablo["g_atr14"]
+    for u in ufuklar:
+        ad = f"fazla_{u}g"
+        if ad in tablo.columns:
+            fz = tablo[ad].to_numpy(dtype=np.float64)
+            kz = (fz > 0).astype(np.float32)
+            kz[~np.isfinite(fz)] = np.nan
+            tablo[f"kazanc_{u}g"] = kz
+    # Those two are now carried under the names the rest of the system uses,
+    # and a column that is a monotone transform of one already in the table
+    # only shows up twice in every diagnostic.
+    tablo = tablo.drop(columns=[c for c in ("tk", "g_dolar_hacim", "g_atr14")
+                                if c in tablo.columns])
+
+    p = yol or capraz_yolu(frekans)
+    p.parent.mkdir(parents=True, exist_ok=True)
+    tablo.to_csv(p, index=False, float_format="%.6g")
+    return {
+        "ok": True,
+        "yol": str(p),
+        "satir": int(len(tablo)),
+        "hisse": int(tablo["ticker"].nunique()),
+        "gun": int(gun.nunique()),
+        "adim": int(adim),
+        "tarih_araligi": [str(gun.min())[:10], str(gun.max())[:10]],
+    }
 
 
 def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
@@ -233,20 +328,37 @@ def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
     """
     if uzun.empty:
         return uzun
-    g = uzun.groupby(["grup", "zaman"], sort=False)
+    # The grouping key, worked out once. Handing groupby a list of column
+    # names makes it factorise the pair again for every column, and there are
+    # thirty-six of them over several million rows.
+    gk = pd.factorize(uzun["grup"].to_numpy())[0].astype(np.int64)
+    zk = pd.factorize(_zaman_indeks(uzun["zaman"]).to_numpy())[0].astype(np.int64)
+    kod = gk * (int(zk.max()) + 1) + zk
+    del gk, zk
 
-    # One column at a time. Ranking all twenty at once and concatenating the
-    # result doubles peak memory for no gain, and this frame is the largest
-    # thing the build ever holds.
-    for c in [c for c in CAPRAZ_OZELLIKLER if c in uzun.columns]:
+    # One column at a time, and each rank replaces the raw values it was
+    # computed from rather than sitting next to them. Keeping both halves of
+    # thirty-six columns across every bar of every stock doubles the width of
+    # the largest frame the build ever holds, and this frame is where the
+    # memory goes. The two or three raw columns that are needed later --- the
+    # liquidity floor is a dollar amount, the tilt diagnostic reports medians,
+    # and neither question can be asked of a percentile --- are copied aside
+    # first.
+    ham = [c for c in CAPRAZ_OZELLIKLER if c in uzun.columns]
+    sakla = {c: uzun[c].copy() for c in TUTULAN_HAM if c in uzun.columns}
+    for c in ham:
         ad = f"x_{c[2:]}" if c.startswith("g_") else f"x_{c}"
-        uzun[ad] = g[c].rank(pct=True).astype(np.float32)
+        uzun[c] = uzun[c].groupby(kod).rank(pct=True).astype(np.float32)
+        uzun.rename(columns={c: ad}, inplace=True)
+    for c, v in sakla.items():
+        uzun[c] = v
+    del sakla
 
     for u in ufuklar:
         ad = f"fazla_{u}g"
         if ad in uzun.columns:
-            uzun[f"akran_{u}g"] = (uzun[ad] - g[ad].transform("mean")
-                                   ).astype(np.float32)
+            ort = uzun[ad].groupby(kod).transform("mean")
+            uzun[f"akran_{u}g"] = (uzun[ad] - ort).astype(np.float32)
     return uzun
 
 
@@ -641,7 +753,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           ufuklar: "tuple[int, ...]" = (3, 5, 10), min_bar: int = 220,
           yol: Path | None = None,
           ilerleme: "callable | None" = None,
-          frekans: str = "1d", gruplar: dict | None = None) -> dict:
+          frekans: str = "1d", gruplar: dict | None = None,
+          capraz_adim: int = 5) -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -795,6 +908,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         capraz_parcalar.clear()
         gc.collect()
         uzun = capraz_kesit(uzun, ufuklar)
+        # Write the whole cross-section before trimming it down to what the
+        # signal rows need. See capraz_yaz for why it is worth having.
+        capraz_tablo = (capraz_yaz(uzun, tk_kod, ufuklar, frekans=frekans,
+                                   adim=capraz_adim)
+                        if capraz_adim else None)
         tut = (["tk", "zaman"]
                + [c for c in uzun.columns if c.startswith(("x_", "akran_"))])
         capraz_bilgi = {
@@ -803,6 +921,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "bar": int(len(uzun)),
             "sutun": [c for c in uzun.columns if c.startswith("x_")],
             "etiket": [c for c in uzun.columns if c.startswith("akran_")],
+            "tablo": capraz_tablo,
         }
         # Drop everything the merge doesn't need before the merge, not after.
         uzun = uzun[tut]

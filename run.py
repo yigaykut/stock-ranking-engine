@@ -2140,7 +2140,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
                   f"{len(gruplar)} sembol", flush=True)
         ozet = kb.panel(bundles, bench, ufuklar=_kisa_ufuklar(args),
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
-                        frekans=args.frekans, gruplar=gruplar)
+                        frekans=args.frekans, gruplar=gruplar,
+                        capraz_adim=args.capraz_adim)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
@@ -2150,6 +2151,11 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         print(f"  kurulum    : {ozet['kurulum']}")
         print(f"  tarih      : {ozet['tarih_araligi'][0]} -> "
               f"{ozet['tarih_araligi'][1]}")
+        cx = (ozet.get("capraz") or {}).get("tablo")
+        if cx and cx.get("ok"):
+            print(f"  capraz     : {cx['satir']:,} satir · {cx['hisse']:,} "
+                  f"hisse · {cx['gun']:,} gun (her {cx['adim']}. gun)")
+            print(f"               {cx['yol']}")
         print(f"  ozellik    : {len(ozet['ozellikler'])} sutun")
         print(f"  etiket     : {', '.join(ozet['etiketler'])}")
         print(f"  etiketli   : "
@@ -2546,7 +2552,7 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     sabir=args.sabir, karistir=args.karistir,
                     tohum_sayisi=args.tohum_sayisi, siralama=args.siralama,
                     gunluk_dilim=not args.havuz_dilim,
-                    min_hacim=args.min_hacim)
+                    min_hacim=args.min_hacim, kaynak=args.kaynak)
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2601,6 +2607,24 @@ def cmd_meta(args: argparse.Namespace) -> int:
         satir += f"{100 * ilk['ortanca']:>10.3f}%"
         print(satir)
     print()
+    ua = [(r_["ufuk"], ((r_.get("dilim") or {}).get("10bp") or {}).get("ust_alt"))
+          for r_ in d["sonuclar"] if r_.get("ok")]
+    ua = [(u, v) for u, v in ua if v]
+    if ua:
+        print("  UST DILIM EKSI ALT DILIM (akran-notr, iki bacakta da maliyet)")
+        print(f"  {'UFUK':>5}{'GETIRI':>10}{'ORTANCA':>10}{'t':>8}"
+              f"{'GUN':>7}{'KAZANAN GUN':>13}")
+        print("  " + "-" * 53)
+        for u, v in ua:
+            tv = v.get("t_nw")
+            tt = f"{tv:+.2f}" if tv is not None else "-"
+            print(f"  {u:>5}{100 * v['getiri']:>9.3f}%"
+                  f"{100 * v['ortanca']:>9.3f}%{tt:>8}"
+                  f"{v['gun']:>7,}{100 * v['kazanan_gun']:>12.0f}%")
+        print("    Ust dilimi almak, havuzun kendi ortalamasini da satin alir;")
+        print("    bu satirlarda o ortalama iki bacak arasinda gidiyor. Geriye")
+        print("    modelin tek iddiasi olan SIRALAMA kaliyor.")
+        print()
     ilk_eg = next((((x.get("dilim") or {}).get("10bp") or {}).get("egilim")
                    for x in d["sonuclar"]
                    if ((x.get("dilim") or {}).get("10bp") or {}).get("egilim")),
@@ -2615,6 +2639,22 @@ def cmd_meta(args: argparse.Namespace) -> int:
             print(f"    ufuk {r_['ufuk']}: {par}")
         print("    1.0'dan uzak bir oran, getirinin modele degil o ozellige "
               "ait olabilecegi anlamina gelir.")
+        print()
+    for r_ in d["sonuclar"]:
+        oi = [x for x in (r_.get("ozellik_ic") or []) if x.get("t_nw")]
+        if len(oi) < 5:
+            continue
+        print(f"  TEK BASINA EN GUCLU OZELLIKLER — ufuk {r_['ufuk']} "
+              f"(gun ici sira korelasyonu)")
+        print(f"    {'OZELLIK':<26}{'IC':>9}{'t':>8}{'POZ.GUN':>9}")
+        for x in oi[:14]:
+            print(f"    {x['ozellik']:<26}{x['ic']:>9.4f}"
+                  f"{x['t_nw']:>+8.2f}{100 * x['pozitif_gun']:>8.0f}%")
+        guclu = sum(1 for x in oi if abs(x["t_nw"]) >= 3)
+        print(f"    {guclu}/{len(oi)} ozellik |t|>=3. Bu tablo TUM span'i "
+              f"okur, katman ayrimi yapmaz:")
+        print("    veriyi tarif eder, tahmin etmez. Modelin ne bulabilecegini")
+        print("    degil, ortada bulunacak bir sey olup olmadigini gosterir.")
         print()
     print("  BRIER-M model · BRIER-K kova · BRIER-T sabit taban orani.")
     print("  Kucuk daha iyi. AUC 0.50 = siralama gucu yok.")
@@ -2830,6 +2870,13 @@ def main() -> int:
                       help="yalnizca ilk N sembol (deneme icin)")
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
+    kv_p.add_argument("--capraz-adim", type=int, default=5,
+                      dest="capraz_adim",
+                      help="panel: tum evrenin kesitini her N. gunde bir de "
+                           "ayri bir tabloya yaz (0 = yazma). 21 gunluk bir "
+                           "ufukta ardisik gunler ayni bahsin bir gun kaymis "
+                           "halidir; hepsini tutmak dosyayi bes katina "
+                           "cikarir, bagimsiz bilgi eklemez.")
 
     hp = sub.add_parser("havuz", aliases=["pool"],
                         help="benzer sirketlerden test havuzu kur "
@@ -2906,6 +2953,12 @@ def main() -> int:
                      help="kac farkli tohumla egitip ortalamasini alsin")
     mp2.add_argument("--siralama", action="store_true",
                      help="egitim hedefi 0/1 yerine gun ici yuzdelik sira")
+    mp2.add_argument("--kaynak", default="sinyal",
+                     choices=["sinyal", "capraz"],
+                     help="sinyal: yalnizca kurulum ateslenen barlar - "
+                          "capraz: tum evren, her gun. Ikincisi 'bugun hangi "
+                          "hisseler akranlarini gecer' sorusudur; birincisi "
+                          "tabani negatif bir havuzun icinden secim yapar.")
     mp2.add_argument("--havuz-dilim", action="store_true", dest="havuz_dilim",
                      help="ust dilimi gun bazinda degil, tum test kumesinden "
                           "sec (eski davranis)")

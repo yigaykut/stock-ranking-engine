@@ -57,24 +57,35 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 MIN_SATIR = 2000
 
 # Egitimde kullanilmayacak sutunlar: kimlik ve etiketler.
-KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
+KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon", "grup")
 
 
 def cikti_yolu(frekans: str, dizi: bool = False,
-               etiket: str = "kazanc", karistir: int = 0) -> Path:
+               etiket: str = "kazanc", karistir: int = 0,
+               kaynak: str = "sinyal") -> Path:
     ek = "_dizi" if dizi else ""
     et = "" if etiket == "kazanc" else f"_{etiket}"
     ka = "_karisik" if karistir else ""
-    return DATA / f"meta_model_{frekans}{ek}{et}{ka}.json"
+    kk = "" if kaynak == "sinyal" else f"_{kaynak}"
+    return DATA / f"meta_model_{frekans}{ek}{et}{kk}{ka}.json"
 
 
 # =============================================================================
 #  Veri
 # =============================================================================
-def panel_yukle(frekans: str = "1d") -> pd.DataFrame | None:
+def panel_yukle(frekans: str = "1d",
+                kaynak: str = "sinyal") -> pd.DataFrame | None:
+    """Signal rows, or the whole cross-section.
+
+    "sinyal" is the table of bars where one of the twelve detectors fired.
+    "capraz" is every stock on every sampled day, which is a different
+    question -- rank the universe rather than triage a watchlist -- and the
+    one the peer ranks were built for.
+    """
     from . import kalibrasyon as kb
 
-    p = kb.panel_yolu(frekans)
+    p = (kb.capraz_yolu(frekans) if kaynak == "capraz"
+         else kb.panel_yolu(frekans))
     if not p.exists():
         return None
     df = pd.read_csv(p)
@@ -106,6 +117,11 @@ def hazirla(df: pd.DataFrame, ufuk: int,
         return None
 
     oz = _ozellik_sutunlari(alt)
+    # The peer group is deliberately NOT a feature. The label already has the
+    # group mean taken out of it, so by construction there is nothing left for
+    # a group dummy to predict -- and when one was handed to the model anyway
+    # the dummies came out at the top of the feature table with t values above
+    # 8, which is the skew of a demeaned distribution being read as skill.
     kategorik = [c for c in ("oynaklik", "likidite", "trend_konumu")
                  if c in alt.columns]
     sayisal = [c for c in oz if c not in kategorik]
@@ -182,7 +198,12 @@ def hazirla(df: pd.DataFrame, ufuk: int,
                     for a in ("dolar_hacim", "atr_pct", "g_ma200_uzaklik")
                     if a in alt.columns},
         "kurulum": alt["kurulum"].to_numpy(),
-        "kosullar": {c: alt[c].astype(str).to_numpy() for c in kategorik},
+        # Only the three the bucket calibration was built on. The peer group
+        # is one-hot input to the model but it is not a bucket condition, and
+        # handing it to the baseline lookup would silently change what the
+        # baseline is comparing against.
+        "kosullar": {c: alt[c].astype(str).to_numpy() for c in kategorik
+                     if c != "grup"},
         "ozellik_adlari": list(XX.columns),
         "satir": len(alt),
     }
@@ -284,6 +305,26 @@ def _budanmis(getiri: np.ndarray, gun: pd.DatetimeIndex,
     return s.clip(lower=lo, upper=hi).to_numpy()
 
 
+def _ortusme(gunler, ufuk_gun: int) -> int:
+    """How many CONSECUTIVE OBSERVATIONS a horizon overlaps.
+
+    The Newey-West lag has to count observations, not trading days, and the
+    two are only the same thing when there is one observation per day. The
+    signal table has one; the cross-section table keeps every fifth day, so a
+    21-day horizon spans about five of its rows rather than twenty-one, and
+    reusing 21 there would widen the standard error for no reason and hide a
+    real result. Reading the spacing off the dates means neither table has to
+    remember which it is.
+    """
+    g = pd.DatetimeIndex(gunler).sort_values()
+    if len(g) < 3:
+        return max(1, int(ufuk_gun))
+    adim = float(np.median(np.busday_count(
+        g[:-1].values.astype("datetime64[D]"),
+        g[1:].values.astype("datetime64[D]"))))
+    return max(1, int(np.ceil(ufuk_gun / max(adim, 1.0))))
+
+
 def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
                    maliyet_bp: float = 0.0, ufuk_gun: int = 1,
@@ -336,8 +377,37 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
     gunluk = pd.DataFrame({"gun": tarih[ust], "r": net}).groupby("gun")["r"].mean()
     if len(gunluk) < 5:
         return {"ok": False, "reason": f"{len(gunluk)} gun"}
-    tv, _, gecikme = newey_west_t(gunluk.to_numpy(),
-                                  lag=max(1, int(ufuk_gun)))
+    lag = _ortusme(gunluk.index, ufuk_gun)
+    tv, _, gecikme = newey_west_t(gunluk.to_numpy(), lag=lag)
+
+    # Top slice minus bottom slice, day by day.
+    #
+    # Buying the top decile inherits whatever the pool as a whole was doing,
+    # and in this pool that is a loss: the setup rows trail their peer group
+    # by about 0.65%. A long-only number therefore measures the pool at least
+    # as much as the ranking. The spread cancels it -- the same money is short
+    # the names the model likes least -- so what is left is the ordering
+    # itself, which is the only thing the model claims to produce. Costs come
+    # off both legs.
+    ust_alt = None
+    if gun_bazinda:
+        alt = sira <= 1.0 / dilim
+        if alt.sum() >= 50:
+            u_g = (pd.DataFrame({"gun": tarih[ust], "r": getiri[ust]})
+                   .groupby("gun")["r"].mean())
+            a_g = (pd.DataFrame({"gun": tarih[alt], "r": getiri[alt]})
+                   .groupby("gun")["r"].mean())
+            fark = (u_g - a_g).dropna()
+            if len(fark) >= 5:
+                fn = fark.to_numpy() - 2.0 * maliyet_bp / 10000.0
+                ftv, _, _ = newey_west_t(fn, lag=_ortusme(fark.index, ufuk_gun))
+                ust_alt = {
+                    "getiri": round(float(fn.mean()), 6),
+                    "ortanca": round(float(np.median(fn)), 6),
+                    "gun": int(len(fn)),
+                    "t_nw": None if not np.isfinite(ftv) else round(float(ftv), 2),
+                    "kazanan_gun": round(float((fn > 0).mean()), 3),
+                }
 
     dilimler = []
     try:
@@ -379,6 +449,7 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
             for a, v in (nitelik or {}).items()
             if np.isfinite(v).any()},
         "maliyet_bp": maliyet_bp,
+        "ust_alt": ust_alt,
         "dilimler": dilimler,
     }
 
@@ -404,7 +475,7 @@ def gunluk_fark(p_model: np.ndarray, p_taban: np.ndarray, y: np.ndarray,
         return float("nan"), float("nan"), len(d)
     # Same overlap as the returns: consecutive days score labels that share
     # almost all of their future window.
-    t, _, _ = newey_west_t(d.to_numpy(), lag=max(1, int(ufuk_gun)))
+    t, _, _ = newey_west_t(d.to_numpy(), lag=_ortusme(d.index, ufuk_gun))
     return float(d.mean()), float(t), int(len(d))
 
 
@@ -427,6 +498,76 @@ def gunluk_ic(p: np.ndarray, hedef: np.ndarray, gun) -> float:
         if len(x) >= 5 else np.nan)
     ic = ic[np.isfinite(ic)]
     return float(ic.mean()) if len(ic) else float("nan")
+
+
+def ozellik_ic(X: np.ndarray, adlar: list, getiri: np.ndarray,
+               tarih, ufuk_gun: int = 1, en_az_gun: int = 30) -> list[dict]:
+    """Each feature on its own, against the outcome, one day at a time.
+
+    The model is a single number and it cannot say WHICH of a hundred and
+    forty columns it is reading, or whether it is reading any of them. This
+    asks the question directly: inside each day, does the ordering of this
+    feature line up with the ordering of what happened next.
+
+    Spearman rather than Pearson because a rank is what the model is being
+    scored on and because one runaway return would otherwise decide the
+    answer. Within-day rather than pooled for the reason everything else here
+    is within-day: a feature that merely drifts with the market would score
+    well pooled while being useless for choosing between today's names.
+
+    The t is over the daily series with the same overlap correction the
+    returns get. A feature with an IC of 0.01 and a t of 5 is worth more than
+    one with an IC of 0.04 and a t of 1.
+    """
+    from .faktor_zaman import newey_west_t
+
+    gun = pd.DatetimeIndex(tarih)
+    kod, benzersiz = pd.factorize(gun)
+    n_gun = len(benzersiz)
+    if n_gun < en_az_gun:
+        return []
+    say = np.bincount(kod).astype(np.float64)
+    yeter = say >= 20            # a rank correlation over five names is noise
+
+    ry = pd.Series(getiri).groupby(kod).rank(pct=True).to_numpy()
+
+    def gunluk_kor(rx):
+        sx = np.bincount(kod, weights=rx)
+        sy = np.bincount(kod, weights=ry)
+        sxy = np.bincount(kod, weights=rx * ry)
+        sxx = np.bincount(kod, weights=rx * rx)
+        syy = np.bincount(kod, weights=ry * ry)
+        pay = sxy - sx * sy / say
+        vx = sxx - sx * sx / say
+        vy = syy - sy * sy / say
+        # A day where the feature is flat across every name has no ordering
+        # to correlate, and both halves of the ratio collapse to rounding
+        # error -- which divides out to an arbitrary number somewhere in
+        # [-1, 1] rather than to nothing. Percentile ranks of distinct values
+        # have a variance near 1/12, so anything below 1e-6 is a tie.
+        gecerli = (vx > say * 1e-6) & (vy > say * 1e-6)
+        with np.errstate(divide="ignore", invalid="ignore"):
+            return np.where(gecerli, pay / np.sqrt(vx * vy), np.nan)
+
+    out = []
+    for j, ad in enumerate(adlar):
+        sut = X[:, j].astype(np.float64)
+        if not np.isfinite(sut).any() or np.nanstd(sut) < 1e-12:
+            continue
+        ic = gunluk_kor(pd.Series(sut).groupby(kod).rank(pct=True).to_numpy())
+        ic = ic[yeter & np.isfinite(ic)]
+        if len(ic) < en_az_gun:
+            continue
+        t, _, _ = newey_west_t(ic, lag=max(1, int(ufuk_gun)))
+        out.append({
+            "ozellik": ad,
+            "ic": round(float(ic.mean()), 5),
+            "t_nw": None if not np.isfinite(t) else round(float(t), 2),
+            "gun": int(len(ic)),
+            "pozitif_gun": round(float((ic > 0).mean()), 3),
+        })
+    out.sort(key=lambda r: -abs(r["t_nw"] or 0))
+    return out
 
 
 def _dogrulama_bol(tarih, pay: float = 0.15):
@@ -864,7 +1005,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              gizli: int = 128, devir: int = 200, sabir: int = 15,
              karistir: int = 0, tohum_sayisi: int = 1,
              siralama: bool = False, gunluk_dilim: bool = True,
-             min_hacim: float = 0.0) -> dict:
+             min_hacim: float = 0.0, kaynak: str = "sinyal") -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -872,7 +1013,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     from . import kalibrasyon as kb
     from . import kisa_vade as kv
 
-    df = panel_yukle(frekans)
+    df = panel_yukle(frekans, kaynak=kaynak)
     if df is None or df.empty:
         return {"ok": False,
                 "reason": f"panel yok — once: python run.py kisa panel "
@@ -966,6 +1107,19 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
                          maliyetler=maliyetler, gizli=gizli, devir=devir,
                          sabir=sabir, tohum_sayisi=tohum_sayisi,
                          gunluk_dilim=gunluk_dilim)
+        # Which columns line up with the outcome at all, before the model
+        # gets a say. This is a description of the panel rather than a
+        # forecast -- it reads the whole span including the folds the model
+        # was scored on -- so it belongs next to the result, not in it. What
+        # it is good for is telling an added feature that earned its place
+        # from one that only made the table wider.
+        try:
+            ufuk_g = max(1, int(np.ceil(u / max(bg, 1e-9))))
+            r["ozellik_ic"] = ozellik_ic(veri["X"], veri["ozellik_adlari"],
+                                         veri["getiri"], veri["tarih"],
+                                         ufuk_gun=ufuk_g)
+        except Exception:
+            r["ozellik_ic"] = []
         r["evren"] = evren
         r["getiri_ad"] = veri.get("getiri_ad")
         r["taban_orani"] = round(taban, 4)
@@ -976,6 +1130,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     return {
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "frekans": frekans,
+        "kaynak": kaynak,
         "ok": any(r.get("ok") for r in sonuc),
         "panel_satir": int(len(df)),
         "evren": evren,
@@ -1037,13 +1192,16 @@ def _notlar(sonuc: list) -> list[str]:
 
 
 def kaydet(payload: dict, path: Path | None = None) -> Path:
-    # The shuffled run gets its own file. Writing a null control over the real
-    # result would be the same mistake the per-frequency panels already made
-    # once, and this one would be worse: it looks like a result.
+    # The shuffled run gets its own file, and so does the cross-section run.
+    # Writing either over the real result would be the same mistake the
+    # per-frequency panels already made once, and these would be worse: they
+    # look like a result. The cross-section one caught me the first time it
+    # ran.
     p = path or cikti_yolu(payload.get("frekans", "1d"),
                            bool(payload.get("dizi")),
                            payload.get("etiket", "kazanc"),
-                           int(payload.get("karistir", 0)))
+                           int(payload.get("karistir", 0)),
+                           payload.get("kaynak", "sinyal"))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                  encoding="utf-8")
