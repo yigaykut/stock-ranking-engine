@@ -519,8 +519,11 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
     bench = _bench_hazirla(bench_close, gun_bazli)
 
     islenen = hatali = 0
-    for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
-        h = (bundle or {}).get("history")
+    # Keys first, bars second. Asking for .items() would materialise every
+    # stock's bars at once; this way a lazy mapping can read them one at a
+    # time and a plain dict behaves exactly as before.
+    for i, tk in enumerate(sorted(bundles or {})):
+        h = ((bundles[tk] or {}).get("history"))
         if h is None or len(h) < min_bar:
             continue
         try:
@@ -873,8 +876,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     tk_kod: dict[str, int] = {}
     islenen = hatali = 0
 
-    for i, (tk, bundle) in enumerate(sorted((bundles or {}).items())):
-        h = (bundle or {}).get("history")
+    # Keys first, bars second. Asking for .items() would materialise every
+    # stock's bars at once; this way a lazy mapping can read them one at a
+    # time and a plain dict behaves exactly as before.
+    for i, tk in enumerate(sorted(bundles or {})):
+        h = ((bundles[tk] or {}).get("history"))
         if h is None or len(h) < min_bar:
             continue
         try:

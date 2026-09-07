@@ -24,6 +24,7 @@ Ornekler
 from __future__ import annotations
 
 import argparse
+from collections.abc import Mapping
 import json
 import sys
 import time
@@ -1940,8 +1941,43 @@ def _kisa_vade_uret(bundles: dict) -> None:
         print(f"      UYARI: kisa vade sinyalleri uretilemedi ({exc})")
 
 
+class _TembelBarlar(Mapping):
+    """Onbellekteki barlari, hepsini birden degil, istendikce okur.
+
+    Tum evrenin on yillik barlari yarim gigabaytin uzerinde ve panel derlemesi
+    bunlarin hepsini daha ilk hisseye bakmadan hafizaya aliyordu. Dongu ayni
+    anda tek bir hisseye bakiyor, dolayisiyla tek seferde bir tanesini tutmak
+    yetiyor -- makinede baska uygulamalar acikken tepe kullanimin 0.45 GB mi
+    yoksa 0.1 GB mi oldugu, derlemenin bitip bitmedigini belirliyor.
+
+    Sozluk gibi davranir; panel() ve kur() dict de tembel de kabul eder.
+    """
+
+    def __init__(self, semboller: list, period: str, azami: float):
+        self._s = list(semboller)
+        self._period, self._azami = period, azami
+
+    def __iter__(self):
+        return iter(self._s)
+
+    def __len__(self):
+        return len(self._s)
+
+    def __getitem__(self, tk):
+        from src.providers import cache as _cache
+
+        hit = _cache.peek("yahoo", f"{tk}:{self._period}")
+        if not hit:
+            return {}
+        b, yas = hit
+        if yas > self._azami or not b or b.get("history") is None:
+            return {}
+        return b
+
+
 def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
-                         limit: int | None = None) -> dict:
+                         limit: int | None = None,
+                         tembel: bool = False) -> dict:
     """Ag istegi YAPMADAN, onbellekteki gunluk barlari toplar.
 
     Kisa vade taramasi gunluk taramadan SONRA calisir; onbellek zaten
@@ -1963,6 +1999,12 @@ def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
     if limit:
         semboller = semboller[:limit]
     azami = max_gun * 24 * 3600
+    if tembel:
+        # Hangi sembollerin gercekten bari var, bunu bilmek icin bir kez
+        # bakilir; barlarin kendisi okunmaz.
+        var = [tk for tk in semboller
+               if _cache.peek("yahoo", f"{tk}:{period}") is not None]
+        return _TembelBarlar(var, period, azami)
     for tk in semboller:
         hit = _cache.peek("yahoo", f"{tk}:{period}")
         if not hit:
@@ -1974,7 +2016,7 @@ def _onbellekten_bundles(period: str = "2y", max_gun: int = 30,
     return out
 
 
-def _kisa_bundles(args: argparse.Namespace) -> dict:
+def _kisa_bundles(args: argparse.Namespace, tembel: bool = False) -> dict:
     """Frekansa gore bar kaynagi.
 
     Gunluk: tum evrenin onbellegi (2700+ hisse).
@@ -1985,7 +2027,8 @@ def _kisa_bundles(args: argparse.Namespace) -> dict:
     from src import intraday as idy
 
     if args.frekans == "1d":
-        b = _onbellekten_bundles(args.period, args.cache_days, args.limit)
+        b = _onbellekten_bundles(args.period, args.cache_days, args.limit,
+                                 tembel=tembel)
         if not b:
             print("HATA: onbellekte gunluk bar yok. Once 'python run.py' calistir.",
                   file=sys.stderr)
@@ -2118,7 +2161,7 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         print("=" * 74)
         print("KISA VADE META-ETIKET PANELI")
         print("=" * 74)
-        bundles = _kisa_bundles(args)
+        bundles = _kisa_bundles(args, tembel=(args.frekans == "1d"))
         if not bundles:
             return 1
         print(f"  {len(bundles)} hisse · frekans {args.frekans}", flush=True)
