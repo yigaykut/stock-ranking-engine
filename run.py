@@ -2607,6 +2607,26 @@ def cmd_meta(args: argparse.Namespace) -> int:
         satir += f"{100 * ilk['ortanca']:>10.3f}%"
         print(satir)
     print()
+    bl = [(r_["ufuk"], r_["bilesik"], (r_.get("dilim") or {}).get("10bp") or {},
+           r_.get("auc_model"))
+          for r_ in d["sonuclar"] if r_.get("ok") and r_.get("bilesik")]
+    if bl:
+        print("  AGA KARSI DUZ ORTALAMA (kendi basina duran ozelliklerin "
+              "esit agirligi, 10bp)")
+        print(f"  {'UFUK':>5}{'BILESIK':>11}{'t':>8}{'AUC':>8}"
+              f"{'AG':>11}{'t':>8}{'AUC':>8}")
+        print("  " + "-" * 59)
+        for u, b, m, ag_auc in bl:
+            bt = f"{b['t_nw']:+.2f}" if b.get("t_nw") is not None else "-"
+            mt = f"{m['t_nw']:+.2f}" if m.get("t_nw") is not None else "-"
+            print(f"  {u:>5}{100 * b['getiri']:>10.3f}%{bt:>8}"
+                  f"{b.get('auc', float('nan')):>8.3f}"
+                  f"{100 * m.get('getiri', 0):>10.3f}%{mt:>8}"
+                  f"{(ag_auc if ag_auc is not None else float('nan')):>8.3f}")
+        print("    Duz ortalamanin ayarlanacak hicbir seyi yok. Agi geciyorsa")
+        print("    ag yapi degil egitim penceresi buluyordur; o zaman cevap")
+        print("    daha cok parametre degil daha az.")
+        print()
     ua = [(r_["ufuk"], ((r_.get("dilim") or {}).get("10bp") or {}).get("ust_alt"))
           for r_ in d["sonuclar"] if r_.get("ok")]
     ua = [(u, v) for u, v in ua if v]

@@ -424,6 +424,44 @@ check("too few days means no answer rather than a bad one",
       mm.ozellik_ic(X4[:400], ["a", "b", "c"], sonuc4[:400], gun4[:400]) == [])
 
 print()
+print("=" * 72)
+print("12) THE DULL BASELINE")
+print("=" * 72)
+
+# Find the columns whose ordering lines up with the outcome, flip the ones
+# pointing the wrong way, average their ranks. No fitting, nothing to tune.
+# The net has to beat this to have earned its layers, so the baseline has to
+# be honest: selection and direction come from the training fold only.
+r5 = np.random.default_rng(31)
+n5 = 24000
+gun5b = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=120), 200))
+ileri = r5.normal(0, 1, n5)
+geri = r5.normal(0, 1, n5)          # works, but points the wrong way
+bosluk = r5.normal(0, 1, n5)
+hedef = 0.004 * ileri - 0.004 * geri + r5.normal(0, 0.02, n5)
+X5 = np.column_stack([ileri, geri, bosluk]).astype(np.float32)
+adlar5 = ["ileri", "geri", "bosluk"]
+
+egit = np.arange(n5) < 16000
+test = ~egit
+c = mm.bilesik(X5[egit], hedef[egit], gun5b[egit], adlar5,
+               X5[test], gun5b[test], ufuk_gun=1)
+check("a score comes back", c is not None and len(c) == int(test.sum()))
+check("it ranks the held-out fold",
+      float(pd.Series(c).corr(pd.Series(hedef[test]), method="spearman")) > 0.1,
+      f"{float(pd.Series(c).corr(pd.Series(hedef[test]), method='spearman')):.3f}")
+
+# The inverted feature has to come in inverted, or it cancels the good one.
+d5 = mm.dilim_getirisi(c, hedef[test], gun5b[test], maliyet_bp=0.0, ufuk_gun=1)
+check("its top decile earns", d5["getiri"] > 0, f"%{100 * d5['getiri']:.2f}")
+
+# Nothing to find, nothing selected.
+bos5 = r5.normal(0, 0.02, n5)
+check("pure noise selects nothing rather than something",
+      mm.bilesik(X5[egit], bos5[egit], gun5b[egit], adlar5,
+                 X5[test], gun5b[test], ufuk_gun=1, esik=4.0) is None)
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)

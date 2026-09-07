@@ -576,6 +576,42 @@ def ozellik_ic(X: np.ndarray, adlar: list, getiri: np.ndarray,
     return out
 
 
+def bilesik(X_egit: np.ndarray, getiri_egit: np.ndarray, gun_egit,
+            adlar: list, X_test: np.ndarray, gun_test,
+            ufuk_gun: int = 1, esik: float = 2.0) -> "np.ndarray | None":
+    """Equal-weight composite of the features that stand up on their own.
+
+    The net has three layers, dropout, early stopping and a seed ensemble,
+    and on a target this noisy every one of those is a chance to fit the
+    training window. The oldest way of building a cross-sectional signal is
+    much duller: find the columns whose ordering lines up with the outcome,
+    flip the ones that point the wrong way, and average their ranks. Equal
+    weights, no fitting, nothing to tune.
+
+    That is worth having as more than a curiosity. If the dull version wins,
+    the net is not finding structure -- it is finding the training window,
+    and the answer to "make the number bigger" is to use fewer parameters
+    rather than more. If the net wins, it is earning its complexity.
+
+    Selection and direction both come from the training fold alone. The test
+    fold contributes nothing but the ranks being averaged.
+    """
+    tablo = ozellik_ic(X_egit, adlar, getiri_egit, gun_egit,
+                       ufuk_gun=ufuk_gun)
+    secili = [(adlar.index(r["ozellik"]), np.sign(r["ic"]))
+              for r in tablo
+              if r["t_nw"] is not None and abs(r["t_nw"]) >= esik]
+    if not secili:
+        return None
+    kod, _ = pd.factorize(pd.DatetimeIndex(gun_test))
+    toplam = np.zeros(len(X_test), dtype=np.float64)
+    for j, yon in secili:
+        sira = (pd.Series(X_test[:, j].astype(np.float64))
+                .groupby(kod).rank(pct=True).to_numpy())
+        toplam += yon * sira
+    return toplam / len(secili)
+
+
 def _dogrulama_bol(tarih, pay: float = 0.15):
     """Split training rows by time: the last slice is held out.
 
@@ -884,7 +920,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     parcalar = np.array_split(gunler, n_kat + 1)
     katlar = []
     tum_p, tum_b, tum_y, tum_t, tum_r = [], [], [], [], []
-    tum_i = []
+    tum_i, tum_c = [], []
 
     for k in range(1, n_kat + 1):
         test_gun = set(pd.Timestamp(g) for g in parcalar[k])
@@ -924,6 +960,16 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         Xd_test = Xd[test_maske] if Xd is not None else None
         p = np.mean([_tahmin(md, veri["X"][test_maske], Xd_test)
                      for md in modeller], axis=0)
+        # The dull baseline, on the same fold, from the same training window.
+        try:
+            bp = bilesik(veri["X"][egitim_maske], veri["getiri"][egitim_maske],
+                         egitim_tarih, veri["ozellik_adlari"],
+                         veri["X"][test_maske], veri["tarih"][test_maske],
+                         ufuk_gun=ufuk_gun)
+        except Exception:
+            bp = None
+        tum_c.append(bp if bp is not None
+                     else np.full(int(test_maske.sum()), np.nan))
         y = veri["y"][test_maske]
         b = kova_olasiligi(kalib, veri["kurulum"][test_maske], ufuk,
                            {a: d[test_maske] for a, d in veri["kosullar"].items()},
@@ -959,6 +1005,15 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                                            gun_bazinda=gunluk_dilim,
                                            nitelik=N)
              for c in maliyetler}
+    C = np.concatenate(tum_c) if tum_c else np.full(len(Y), np.nan)
+    bilesik_dilim = None
+    if np.isfinite(C).any():
+        iyi = np.isfinite(C)
+        bilesik_dilim = dilim_getirisi(C[iyi], R[iyi], T[iyi],
+                                       maliyet_bp=10.0, ufuk_gun=ufuk_gun,
+                                       gun_bazinda=gunluk_dilim)
+        bilesik_dilim["auc"] = round(auc(C[iyi], Y[iyi]), 4)
+        bilesik_dilim["kapsanan"] = int(iyi.sum())
 
     return {
         "ok": True,
@@ -976,6 +1031,9 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         "t_nw": None if not np.isfinite(t) else round(t, 2),
         "brier_daha_iyi": bool(np.isfinite(t) and t >= 2.0),
         "dilim": dilim,
+        # What a flat average of the surviving features gets, on the same
+        # folds. The net has to beat this to have earned its layers.
+        "bilesik": bilesik_dilim,
         # The headline call. Brier says whether the probabilities are better
         # calibrated; this says whether the rows you'd act on made money after
         # costs. The second question is the one that matters.
