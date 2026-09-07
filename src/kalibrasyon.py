@@ -771,7 +771,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           yol: Path | None = None,
           ilerleme: "callable | None" = None,
           frekans: str = "1d", gruplar: dict | None = None,
-          capraz_adim: int = 5) -> dict:
+          capraz_adim: int = 5, sadece_capraz: bool = False) -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -800,6 +800,25 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     gun_bazli = (frekans == "1d")
     bench = _bench_hazirla(bench_close, gun_bazli)
     gruplar = gruplar or {}
+    # Which days the cross-section keeps.
+    #
+    # The table only ever gets written every `capraz_adim` days, and building
+    # the full daily version first is what ran the machine out of memory: ten
+    # years of every stock on every day is six and a half million rows held
+    # twice over, on top of the setup rows. Thinning inside the loop instead
+    # costs nothing, because a rank at time t only needs the other stocks at
+    # time t --- dropping whole dates leaves every surviving date complete.
+    #
+    # The grid comes from the benchmark so that every stock is thinned to the
+    # SAME dates. Thin each one to its own every-fifth-bar and the cross
+    # sections stop lining up, which would quietly leave one or two names in
+    # each group on each date.
+    # Kept as datetime64, not as a set of Timestamps: np.isin against a list
+    # of Timestamps compares object to datetime64 and quietly matches nothing,
+    # which produced an empty cross-section and no error at all.
+    izgara = None
+    if sadece_capraz and bench is not None and capraz_adim > 1:
+        izgara = _gunluk_indeks(bench.index)[::int(capraz_adim)].to_numpy()
     parcalar: list[pd.DataFrame] = []
     # Every bar of every stock, not just the signal bars -- a peer rank has to
     # be taken over the whole cross-section, and signal rows alone are one or
@@ -850,7 +869,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     getiri = getiri - (bser.shift(-ufuk) / bser - 1.0)
                 etiketler[ufuk] = getiri
 
-            for kid in kv.KAYIT:
+            for kid in ([] if sadece_capraz else kv.KAYIT):
                 var = t[(kid, "var")].to_numpy()
                 if not var.any():
                     continue
@@ -896,13 +915,16 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 # next to, and this frame is the largest thing the build
                 # holds. The names come back at merge time.
                 tkod = tk_kod.setdefault(tk, len(tk_kod))
-                cx = pd.DataFrame({"zaman": _zaman_indeks(df.index)})
+                zmn = _zaman_indeks(df.index)
+                tut_gun = (np.isin(_gunluk_indeks(df.index).to_numpy(), izgara)
+                           if izgara is not None else slice(None))
+                cx = pd.DataFrame({"zaman": zmn[tut_gun]})
                 cx["tk"] = np.int32(tkod)
                 cx["grup"] = np.int16(kod)
                 for c in sut:
-                    cx[c] = genis[c].to_numpy()
+                    cx[c] = genis[c].to_numpy()[tut_gun]
                 for ufuk, g_ in etiketler.items():
-                    cx[f"fazla_{ufuk}g"] = g_.to_numpy()
+                    cx[f"fazla_{ufuk}g"] = g_.to_numpy()[tut_gun]
                 capraz_parcalar.append(_hafiflet(cx))
             islenen += 1
         except Exception:
@@ -911,13 +933,17 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         if ilerleme and (i + 1) % 200 == 0:
             ilerleme(i + 1, islenen)
 
-    if not parcalar:
+    if not parcalar and not sadece_capraz:
         return {"ok": False, "reason": "hicbir kurulum bulunamadi"}
+    if not capraz_parcalar and sadece_capraz:
+        return {"ok": False, "reason": "capraz kesit kurulamadi"}
 
-    tablo = pd.concat(parcalar, ignore_index=True, copy=False)
-    parcalar.clear()
-    gc.collect()
-    tablo.insert(3, "frekans", frekans)
+    tablo = None
+    if parcalar:
+        tablo = pd.concat(parcalar, ignore_index=True, copy=False)
+        parcalar.clear()
+        gc.collect()
+        tablo.insert(3, "frekans", frekans)
 
     capraz_bilgi = None
     if capraz_parcalar:
@@ -926,9 +952,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         gc.collect()
         uzun = capraz_kesit(uzun, ufuklar)
         # Write the whole cross-section before trimming it down to what the
-        # signal rows need. See capraz_yaz for why it is worth having.
+        # signal rows need. See capraz_yaz for why it is worth having. When
+        # the rows were already thinned in the loop there is nothing left to
+        # sample, so the writer is told to keep what it is given.
         capraz_tablo = (capraz_yaz(uzun, tk_kod, ufuklar, frekans=frekans,
-                                   adim=capraz_adim)
+                                   adim=1 if izgara is not None else capraz_adim)
                         if capraz_adim else None)
         tut = (["tk", "zaman"]
                + [c for c in uzun.columns if c.startswith(("x_", "akran"))])
@@ -941,16 +969,37 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "tablo": capraz_tablo,
         }
         # Drop everything the merge doesn't need before the merge, not after.
-        uzun = uzun[tut]
-        gc.collect()
-        tablo["tk"] = tablo["ticker"].map(tk_kod).astype("Int32")
-        tablo = tablo.merge(uzun, on=["tk", "zaman"], how="left")
-        tablo = tablo.drop(columns=["tk"])
+        if tablo is not None:
+            uzun = uzun[tut]
+            gc.collect()
+            tablo["tk"] = tablo["ticker"].map(tk_kod).astype("Int32")
+            tablo = tablo.merge(uzun, on=["tk", "zaman"], how="left")
+            tablo = tablo.drop(columns=["tk"])
         del uzun
         gc.collect()
     # FREKANS BASINA AYRI DOSYA. Ayni hatayi ufuk arsivlerinde ve
     # kalibrasyonda birer kez yaptik: tek dosyaya yazilan iki olcum,
     # ikincisi birincisini yok ediyor ve bunu hicbir sey soylemiyor.
+    if tablo is None:
+        # Cross-section only: there is no setup table to write, and the one
+        # already on disk is left where it is rather than being replaced by
+        # an empty file.
+        return {
+            "ok": True,
+            "yol": None,
+            "frekans": frekans,
+            "satir": 0,
+            "hisse": islenen,
+            "hatali": hatali,
+            "kurulum": 0,
+            "sadece_capraz": True,
+            "capraz": capraz_bilgi,
+            "tarih_araligi": (capraz_bilgi or {}).get("tablo", {})
+                             .get("tarih_araligi", [None, None]),
+            "ozellikler": (capraz_bilgi or {}).get("sutun", []),
+            "etiketler": (capraz_bilgi or {}).get("etiket", []),
+            "etiketli_oran": {},
+        }
     p = yol or panel_yolu(frekans)
     p.parent.mkdir(parents=True, exist_ok=True)
     tablo.to_csv(p, index=False, float_format="%.6g")

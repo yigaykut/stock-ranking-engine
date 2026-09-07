@@ -2141,20 +2141,24 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         ozet = kb.panel(bundles, bench, ufuklar=_kisa_ufuklar(args),
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                         frekans=args.frekans, gruplar=gruplar,
-                        capraz_adim=args.capraz_adim)
+                        capraz_adim=args.capraz_adim,
+                        sadece_capraz=args.sadece_capraz)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
         print()
-        print(f"  satir      : {ozet['satir']:,}")
+        if not ozet.get("sadece_capraz"):
+            print(f"  satir      : {ozet['satir']:,}")
+            print(f"  kurulum    : {ozet['kurulum']}")
         print(f"  hisse      : {ozet['hisse']}")
-        print(f"  kurulum    : {ozet['kurulum']}")
         print(f"  tarih      : {ozet['tarih_araligi'][0]} -> "
               f"{ozet['tarih_araligi'][1]}")
         cx = (ozet.get("capraz") or {}).get("tablo")
         if cx and cx.get("ok"):
+            adim = (args.capraz_adim if args.sadece_capraz
+                    else cx["adim"])
             print(f"  capraz     : {cx['satir']:,} satir · {cx['hisse']:,} "
-                  f"hisse · {cx['gun']:,} gun (her {cx['adim']}. gun)")
+                  f"hisse · {cx['gun']:,} gun (her {adim}. gun)")
             print(f"               {cx['yol']}")
         print(f"  ozellik    : {len(ozet['ozellikler'])} sutun")
         print(f"  etiket     : {', '.join(ozet['etiketler'])}")
@@ -2890,6 +2894,13 @@ def main() -> int:
                       help="yalnizca ilk N sembol (deneme icin)")
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
+    kv_p.add_argument("--sadece-capraz", action="store_true",
+                      dest="sadece_capraz",
+                      help="panel: yalnizca capraz kesit tablosunu kur, "
+                           "kurulum satirlarina hic dokunma. Ikisini ayni "
+                           "anda hafizada tutmak 16 GB'lik bir makinede "
+                           "yetmiyor; bu mod kesiti daha dongu icinde "
+                           "seyreltir.")
     kv_p.add_argument("--capraz-adim", type=int, default=5,
                       dest="capraz_adim",
                       help="panel: tum evrenin kesitini her N. gunde bir de "
