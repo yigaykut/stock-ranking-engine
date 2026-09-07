@@ -123,15 +123,34 @@ print("=" * 72)
 
 df = pd.DataFrame({
     "ticker": ["A"], "tarih": ["2025-01-01"], "zaman": ["2025-01-01 10:00"],
-    "frekans": ["1h"], "kurulum": ["cekic"], "yon": ["long"],
+    "frekans": ["1h"], "kurulum": ["cekic"], "yon": ["long"], "grup": [3],
     "guc": [0.5], "rsi14": [50.0],
     "fazla_5g": [0.01], "kazanc_5g": [1.0],
+    "akran_5g": [0.02], "akranmed_5g": [0.02], "bariyer_5g": [1.0],
 })
 oz = mm._ozellik_sutunlari(df)
 check("ids are excluded", not (set(mm.KIMLIK) & set(oz)), str(oz))
 check("labels are excluded",
       not any(c.startswith(("fazla_", "kazanc_")) for c in oz))
+# akranmed_ does not start with "akran_", and an exclusion list written with
+# the underscore let the answer through as a feature.
+check("the median peer label is excluded too", "akranmed_5g" not in oz,
+      str(oz))
 check("real features survive", set(oz) == {"guc", "rsi14"}, str(oz))
+
+# The size column has to match the label being fitted; scoring a model
+# trained against the group median on returns measured against the group mean
+# would compare it on exactly the outliers the median exists to keep out.
+uzunca = pd.concat([df.assign(tarih=f"2025-01-{g:02d}", ticker=f"T{t}")
+                    for g in range(1, 29) for t in range(100)],
+                   ignore_index=True)
+uzunca["akran_5g"] = np.linspace(-1, 1, len(uzunca))
+uzunca["akranmed_5g"] = np.linspace(-2, 2, len(uzunca))
+for et, bekle in (("akran", "akran_5g"), ("akranmed", "akranmed_5g")):
+    v = mm.hazirla(uzunca, 5, et)
+    check(f"label {et} is scored on {bekle}",
+          v is not None and v["getiri_ad"] == bekle,
+          str(None if v is None else v["getiri_ad"]))
 
 print()
 print("=" * 72)

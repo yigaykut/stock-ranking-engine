@@ -97,7 +97,7 @@ def panel_yukle(frekans: str = "1d",
 def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
     return [c for c in df.columns
             if c not in KIMLIK
-            and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran_"))]
+            and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran"))]
 
 
 def hazirla(df: pd.DataFrame, ufuk: int,
@@ -142,8 +142,14 @@ def hazirla(df: pd.DataFrame, ufuk: int,
     # can be right barely more than half the time and still be worth having if
     # its wins are bigger than its losses, and a hit rate alone can't show
     # that. Prefer the peer-demeaned return when it's there.
-    getiri_ad = next((c for c in (f"akran_{ufuk}g", f"fazla_{ufuk}g")
-                      if c in alt.columns), None)
+    # Whichever peer benchmark is being fitted is the one whose size column
+    # the top-decile metric has to read. Mixing them would score a model
+    # trained against the group median on returns measured against the group
+    # mean, and the two differ by exactly the outliers the median exists to
+    # keep out.
+    adaylar = ((etiket,) if etiket.startswith("akran") else ()) + (
+        f"akranmed_{ufuk}g", f"akran_{ufuk}g", f"fazla_{ufuk}g")
+    getiri_ad = next((c for c in adaylar if c in alt.columns), None)
     getiri = (alt[getiri_ad].to_numpy(dtype=np.float64)
               if getiri_ad else np.zeros(len(alt)))
     if getiri_ad and zaman is not None:

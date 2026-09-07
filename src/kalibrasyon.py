@@ -356,9 +356,26 @@ def capraz_kesit(uzun: pd.DataFrame, ufuklar) -> pd.DataFrame:
 
     for u in ufuklar:
         ad = f"fazla_{u}g"
-        if ad in uzun.columns:
-            ort = uzun[ad].groupby(kod).transform("mean")
-            uzun[f"akran_{u}g"] = (uzun[ad] - ort).astype(np.float32)
+        if ad not in uzun.columns:
+            continue
+        ort = uzun[ad].groupby(kod).transform("mean")
+        uzun[f"akran_{u}g"] = (uzun[ad] - ort).astype(np.float32)
+        # And the same thing benchmarked against the middle of the group
+        # rather than its average.
+        #
+        # A group mean is only "what my peers did" while no peer does
+        # something absurd. On 2018-07-05 one group averaged +5697% over the
+        # next 21 days and its median was +6.2% -- a single unadjusted
+        # corporate action -- so every other stock in that group got a peer
+        # return of about -5697% for that date. Twelve percent of
+        # (group, date) cells have their mean more than five points off their
+        # median, which is a lot of label to be deciding by one name.
+        #
+        # Both columns are written. Changing the label changes every number
+        # downstream, and a change like that has to be measurable on its own
+        # rather than folded in with everything else.
+        med = uzun[ad].groupby(kod).transform("median")
+        uzun[f"akranmed_{u}g"] = (uzun[ad] - med).astype(np.float32)
     return uzun
 
 
@@ -914,13 +931,13 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                                    adim=capraz_adim)
                         if capraz_adim else None)
         tut = (["tk", "zaman"]
-               + [c for c in uzun.columns if c.startswith(("x_", "akran_"))])
+               + [c for c in uzun.columns if c.startswith(("x_", "akran"))])
         capraz_bilgi = {
             "grup": int(uzun["grup"].nunique()),
             "hisse": int(uzun["tk"].nunique()),
             "bar": int(len(uzun)),
             "sutun": [c for c in uzun.columns if c.startswith("x_")],
-            "etiket": [c for c in uzun.columns if c.startswith("akran_")],
+            "etiket": [c for c in uzun.columns if c.startswith("akran")],
             "tablo": capraz_tablo,
         }
         # Drop everything the merge doesn't need before the merge, not after.

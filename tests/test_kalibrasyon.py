@@ -511,6 +511,27 @@ check("the group offset is gone",
 check("the label still varies inside a group",
       float(cx[cx.grup == "A"]["akran_5g"].std()) > 0.01)
 
+# A group mean is only "what my peers did" while no peer does something
+# absurd. One unadjusted corporate action in a group of sixty moves the mean
+# by a factor and hands every other name in that group a peer return of minus
+# several thousand percent -- which is not a measurement of anything.
+bozuk = uzun.copy()
+patlayan = (bozuk.ticker == "A5")
+bozuk.loc[patlayan, "fazla_5g"] = 400.0
+cx_b = kb.capraz_kesit(bozuk, (5,))
+saglam = cx_b[(cx_b.grup == "A") & (~patlayan.to_numpy())]
+
+check("the median label is produced alongside the mean one",
+      "akranmed_5g" in cx_b.columns)
+ortalamali = float(saglam["akran_5g"].mean())
+check("one runaway name wrecks the mean-based label",
+      abs(ortalamali) > 10, f"peers land at {ortalamali:.0f}")
+check("and leaves the median-based one alone",
+      abs(float(saglam["akranmed_5g"].mean())) < 0.1,
+      f"{float(saglam['akranmed_5g'].mean()):.4f}")
+check("the runaway itself is still flagged as extreme",
+      float(cx_b[patlayan]["akranmed_5g"].min()) > 100)
+
 print()
 print("=" * 72)
 print("12) THE CROSS-SECTION AS ITS OWN TABLE")

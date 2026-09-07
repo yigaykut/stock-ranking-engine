@@ -2970,11 +2970,15 @@ def main() -> int:
     mp2.add_argument("--pencere", type=int, default=24,
                      help="--dizi ile: kac bar geriye bakilsin")
     mp2.add_argument("--etiket", default="kazanc",
-                     choices=["kazanc", "bariyer", "bariyertam", "akran"],
+                     choices=["kazanc", "bariyer", "bariyertam", "akran",
+                              "akranmed"],
                      help="kazanc: N bar sonra endeksi gecti mi - "
                           "bariyer: hedefe mi once degdi stopa mi (cozulmeyen "
                           "satirlar bos) - bariyertam: ayni ama cozulmeyenler "
-                          "de dikey bariyerdeki isaretle etiketli")
+                          "de dikey bariyerdeki isaretle etiketli - "
+                          "akran: akran grubunun ORTALAMASINDAN farki - "
+                          "akranmed: MEDYANINDAN farki. Ortalama, gruptaki "
+                          "tek bir duzeltilmemis hareketten kayabilir.")
 
     cp = sub.add_parser("clear-cache", help="veri onbellegini temizle")
     cp.add_argument("--namespace", default=None)
