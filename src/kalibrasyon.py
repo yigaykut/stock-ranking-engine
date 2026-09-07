@@ -556,8 +556,6 @@ def kur(bundles: dict, bench_close: "pd.Series | None" = None,
                              [(ad, s[var]) for ad, s in dilimler],
                              yon=kur_.yon)
             islenen += 1
-            if sum(len(x) for x in parcalar) >= 300_000:
-                akis_sutun = _dok(parcalar, gecici, akis_sutun)
         except Exception:
             hatali += 1
             continue
@@ -777,6 +775,13 @@ def _dok(parcalar: list, yol: Path, sutunlar: list | None) -> list:
     memory next to the cross-section until both were finished. Flushing as we
     go means the peak is one batch instead of the whole table.
 
+    The batches are deliberately small. Concatenating a few thousand narrow
+    frames into one wide one costs an intermediate the size of the result,
+    and what the allocator hands back afterwards is not what the operating
+    system sees --- the process stayed at 2.3 GB with the accumulation
+    already gone. Smaller batches keep both the intermediate and the
+    fragmentation down.
+
     The column list is pinned to whatever the first batch had. A ticker whose
     barrier labels failed to compute produces a narrower frame, and appending
     that to a CSV shifts every value after it one column left without
@@ -975,9 +980,11 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 cx["gerek"] = gerek[tut_gun].astype(np.uint8)
                 capraz_parcalar.append(_hafiflet(cx))
                 if (not sadece_capraz
-                        and sum(len(x) for x in capraz_parcalar) >= 400_000):
+                        and sum(len(x) for x in capraz_parcalar) >= 150_000):
                     cx_sutun = _dok(capraz_parcalar, cx_gecici, cx_sutun)
             islenen += 1
+            if sum(len(x) for x in parcalar) >= 80_000:
+                akis_sutun = _dok(parcalar, gecici, akis_sutun)
         except Exception:
             hatali += 1
             continue

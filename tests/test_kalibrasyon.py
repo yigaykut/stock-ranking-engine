@@ -165,6 +165,15 @@ try:
 
     kal_iyi = kb.kur(evren(sonrasi=0.006, seed0=1), bench, ufuklar=(5,),
                      min_bar=220)
+    # Bu dongu her hisseyi bir try/except icinde isliyor ve hatayi sayip
+    # gecistiriyor -- veri bozuksa dogru davranis, ama bir PROGRAMLAMA hatasi
+    # da tam olarak bunun icinde kaybolur. Bir yama yanlis fonksiyona dusup
+    # kur() icinde tanimsiz bir degiskene dokundu ve her hisse sessizce
+    # "hatali" sayildi; hicbir sey degismis gibi gorunuyordu. Temiz sentetik
+    # girdide hata sayisi sifir olmali.
+    check("temiz girdide hicbir hisse dusmuyor", kal_iyi["hatali"] == 0,
+          f"{kal_iyi['hatali']}/{kal_iyi['hisse'] + kal_iyi['hatali']} hisse "
+          f"sessizce elendi")
     kovalar = {(k["kurulum"], k["kosul"]): k for k in kal_iyi["kovalar"]}
     g = kovalar.get((TEST_ID, "*"))
     check("kova olustu", g is not None)
@@ -270,6 +279,13 @@ try:
         oz = kb.panel(evren(sonrasi=0.006, seed0=1), bench, ufuklar=(3, 5),
                       min_bar=220, yol=yol)
         check("panel uretildi", oz.get("ok"), str(oz.get("reason")))
+        # kur() ile ayni gerekce: dongu her hisseyi try/except icinde isliyor,
+        # yani bir programlama hatasi burada da sessizce "hatali" sayilir. Bir
+        # yama yanlis fonksiyona dustugunde tam bu olmustu ve satirlar diske
+        # hic dokulmedigi icin bellek hisse basina buyuyordu -- cikti yine de
+        # dogruydu, o yuzden hicbir kontrol yakalamadi.
+        check("temiz girdide hicbir hisse dusmuyor", oz.get("hatali") == 0,
+              f"{oz.get('hatali')} hisse sessizce elendi")
         if oz.get("ok"):
             t = pd.read_csv(yol)
             print(f"        {oz['satir']} satir, {len(oz['ozellikler'])} ozellik")
