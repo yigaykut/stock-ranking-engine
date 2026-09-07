@@ -228,7 +228,7 @@ def capraz_yolu(frekans: str) -> Path:
 
 def capraz_yaz(uzun: pd.DataFrame, tk_kod: dict, ufuklar,
                frekans: str = "1d", adim: int = 5,
-               yol: Path | None = None) -> dict:
+               yol: Path | None = None, ekle: bool = False) -> dict:
     """The whole cross-section as its own training table.
 
     The panel next to this one holds only the bars where one of the twelve
@@ -287,12 +287,14 @@ def capraz_yaz(uzun: pd.DataFrame, tk_kod: dict, ufuklar,
     # Those two are now carried under the names the rest of the system uses,
     # and a column that is a monotone transform of one already in the table
     # only shows up twice in every diagnostic.
-    tablo = tablo.drop(columns=[c for c in ("tk", "g_dolar_hacim", "g_atr14")
+    tablo = tablo.drop(columns=[c for c in ("tk", "g_dolar_hacim", "g_atr14",
+                                            "gerek")
                                 if c in tablo.columns])
 
     p = yol or capraz_yolu(frekans)
     p.parent.mkdir(parents=True, exist_ok=True)
-    tablo.to_csv(p, index=False, float_format="%.6g")
+    tablo.to_csv(p, index=False, float_format="%.6g",
+                 mode="a" if ekle else "w", header=not (ekle and p.exists()))
     return {
         "ok": True,
         "yol": str(p),
@@ -854,7 +856,10 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     gecici.parent.mkdir(parents=True, exist_ok=True)
     gecici.unlink(missing_ok=True)
     akis_sutun: list | None = None
-    akis_satir = 0
+    # And the same for the cross-section, which is the larger of the two.
+    cx_gecici = (yol or panel_yolu(frekans)).with_suffix(".cx.csv")
+    cx_gecici.unlink(missing_ok=True)
+    cx_sutun: list | None = None
     # Every bar of every stock, not just the signal bars -- a peer rank has to
     # be taken over the whole cross-section, and signal rows alone are one or
     # two names at any given timestamp.
@@ -904,10 +909,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     getiri = getiri - (bser.shift(-ufuk) / bser - 1.0)
                 etiketler[ufuk] = getiri
 
+            gerek = np.zeros(len(df), dtype=bool)
             for kid in ([] if sadece_capraz else kv.KAYIT):
                 var = t[(kid, "var")].to_numpy()
                 if not var.any():
                     continue
+                gerek |= var
                 # Build the columns in a dict and make the frame once.
                 # Adding ~110 columns one at a time to a DataFrame fragments
                 # it badly, and this runs per setup per ticker.
@@ -960,7 +967,16 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                     cx[c] = genis[c].to_numpy()[tut_gun]
                 for ufuk, g_ in etiketler.items():
                     cx[f"fazla_{ufuk}g"] = g_.to_numpy()[tut_gun]
+                # Which of this stock's bars a setup actually fired on. The
+                # ranks have to be computed over every bar --- that is what
+                # makes them cross-sectional --- but only these rows are ever
+                # read again, and carrying the rest to the end is what the
+                # memory was going on.
+                cx["gerek"] = gerek[tut_gun].astype(np.uint8)
                 capraz_parcalar.append(_hafiflet(cx))
+                if (not sadece_capraz
+                        and sum(len(x) for x in capraz_parcalar) >= 400_000):
+                    cx_sutun = _dok(capraz_parcalar, cx_gecici, cx_sutun)
             islenen += 1
         except Exception:
             hatali += 1
@@ -979,7 +995,57 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
 
     capraz_bilgi = None
     uzun = None
-    if capraz_parcalar:
+    if not sadece_capraz and (capraz_parcalar or cx_gecici.exists()):
+        # A year at a time, read back off disk.
+        #
+        # Ranking is within (group, timestamp), so a date never straddles two
+        # years and a year is an exact, self-contained block. Holding the
+        # whole thing instead was the last place the build could still reach
+        # three gigabytes, and it was carrying every bar of every stock to the
+        # end when only the bars a setup fired on are ever read again.
+        cx_sutun = _dok(capraz_parcalar, cx_gecici, cx_sutun)
+        capraz_parcalar.clear()
+        gc.collect()
+        yillik: dict[int, list] = {}
+        for parca in pd.read_csv(cx_gecici, chunksize=400_000,
+                                 parse_dates=["zaman"]):
+            for yil, alt_p in parca.groupby(parca["zaman"].dt.year):
+                yillik.setdefault(int(yil), []).append(alt_p)
+            del parca
+        tutulan, ilk_cx, bar_say, grup_say, tk_say = [], True, 0, set(), set()
+        for yil in sorted(yillik):
+            blok = pd.concat(yillik.pop(yil), ignore_index=True, copy=False)
+            bar_say += len(blok)
+            grup_say.update(blok["grup"].unique().tolist())
+            tk_say.update(blok["tk"].unique().tolist())
+            blok = capraz_kesit(blok, ufuklar)
+            if capraz_adim:
+                # Sampling restarts its phase at each year boundary. Every
+                # stock still lands on the same dates as every other, which
+                # is the part that matters for a cross section; the ten
+                # boundaries are not worth carrying a global date grid for.
+                capraz_yaz(blok, tk_kod, ufuklar, frekans=frekans,
+                           adim=capraz_adim, ekle=not ilk_cx)
+                ilk_cx = False
+            sut = (["tk", "zaman"]
+                   + [c for c in blok.columns if c.startswith(("x_", "akran"))])
+            tutulan.append(blok.loc[blok["gerek"].astype(bool), sut])
+            del blok
+            gc.collect()
+        cx_gecici.unlink(missing_ok=True)
+        uzun = pd.concat(tutulan, ignore_index=True, copy=False)
+        tutulan.clear()
+        gc.collect()
+        capraz_bilgi = {
+            "grup": len(grup_say),
+            "hisse": len(tk_say),
+            "bar": bar_say,
+            "sutun": [c for c in uzun.columns if c.startswith("x_")],
+            "etiket": [c for c in uzun.columns if c.startswith("akran")],
+            "tablo": ({"ok": True, "yol": str(capraz_yolu(frekans))}
+                      if capraz_adim else None),
+        }
+    elif capraz_parcalar:
         uzun = pd.concat(capraz_parcalar, ignore_index=True, copy=False)
         capraz_parcalar.clear()
         gc.collect()
