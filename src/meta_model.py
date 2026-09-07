@@ -44,6 +44,7 @@ doneminin sonucunu egitimde gormus olur ve skor sahte cikar.
 """
 from __future__ import annotations
 
+import gc
 import json
 from datetime import datetime, timezone
 from pathlib import Path
@@ -88,7 +89,20 @@ def panel_yukle(frekans: str = "1d",
          else kb.panel_yolu(frekans))
     if not p.exists():
         return None
-    df = pd.read_csv(p)
+    # Features come in as float32, labels and returns as float64.
+    #
+    # The model casts every feature to float32 before it sees one, so reading
+    # them as float64 first only doubles the frame and doubles every copy made
+    # from it -- which is what ran the machine out of memory partway through a
+    # run. The label columns keep their width: a rank target and a winsorised
+    # mean cost almost nothing to store and I would rather not think about
+    # rounding in the one column the answer is measured on.
+    basliklar = pd.read_csv(p, nrows=0).columns
+    metin = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
+    tipler = {c: np.float32 for c in basliklar
+              if c not in metin
+              and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran"))}
+    df = pd.read_csv(p, dtype=tipler)
     if "tarih" in df.columns:
         df["tarih"] = pd.to_datetime(df["tarih"], errors="coerce")
     return df.dropna(subset=["tarih"])
@@ -113,7 +127,9 @@ def hazirla(df: pd.DataFrame, ufuk: int,
     etiket = f"{etiket_tipi}_{ufuk}g"
     if etiket not in df.columns:
         return None
-    alt = df[df[etiket].notna()].copy()
+    # Boolean indexing already hands back a copy; asking for a second one
+    # doubles the largest frame in the process for nothing.
+    alt = df[df[etiket].notna()]
     if len(alt) < MIN_SATIR:
         return None
 
@@ -140,15 +156,20 @@ def hazirla(df: pd.DataFrame, ufuk: int,
                  if c in alt.columns]
     sayisal = [c for c in oz if c not in kategorik]
 
-    X = alt[sayisal].apply(pd.to_numeric, errors="coerce")
-    X = X.replace([np.inf, -np.inf], np.nan)
-    X = X.fillna(X.median(numeric_only=True)).fillna(0.0)
+    X = alt[sayisal].apply(pd.to_numeric, errors="coerce").astype(np.float32)
+    # In place from here. Each of these used to leave the previous version
+    # behind for the collector to find later, and later was after the peak.
+    X.replace([np.inf, -np.inf], np.nan, inplace=True)
+    X.fillna(X.median(numeric_only=True), inplace=True)
+    X.fillna(0.0, inplace=True)
 
     parcalar = [X]
     for c in kategorik + ["kurulum"]:
         if c in alt.columns:
             parcalar.append(pd.get_dummies(alt[c].astype(str), prefix=c[:4]))
     XX = pd.concat(parcalar, axis=1).astype(np.float32)
+    del parcalar, X
+    gc.collect()
 
     zaman = (pd.DatetimeIndex(pd.to_datetime(alt["zaman"], errors="coerce"))
              if "zaman" in alt.columns else None)
@@ -592,7 +613,8 @@ def ozellik_ic(X: np.ndarray, adlar: list, getiri: np.ndarray,
 
 def bilesik(X_egit: np.ndarray, getiri_egit: np.ndarray, gun_egit,
             adlar: list, X_test: np.ndarray, gun_test,
-            ufuk_gun: int = 1, esik: float = 2.0) -> "np.ndarray | None":
+            ufuk_gun: int = 1, esik: float = 2.0,
+            secilen: "list | None" = None) -> "np.ndarray | None":
     """Equal-weight composite of the features that stand up on their own.
 
     The net has three layers, dropout, early stopping and a seed ensemble,
@@ -617,6 +639,8 @@ def bilesik(X_egit: np.ndarray, getiri_egit: np.ndarray, gun_egit,
               if r["t_nw"] is not None and abs(r["t_nw"]) >= esik]
     if not secili:
         return None
+    if secilen is not None:
+        secilen.append([f"{'+' if y > 0 else '-'}{adlar[j]}" for j, y in secili])
     kod, _ = pd.factorize(pd.DatetimeIndex(gun_test))
     toplam = np.zeros(len(X_test), dtype=np.float64)
     for j, yon in secili:
@@ -935,6 +959,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     katlar = []
     tum_p, tum_b, tum_y, tum_t, tum_r = [], [], [], [], []
     tum_i, tum_c = [], []
+    bilesik_secilen: list = []
 
     for k in range(1, n_kat + 1):
         test_gun = set(pd.Timestamp(g) for g in parcalar[k])
@@ -979,7 +1004,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
             bp = bilesik(veri["X"][egitim_maske], veri["getiri"][egitim_maske],
                          egitim_tarih, veri["ozellik_adlari"],
                          veri["X"][test_maske], veri["tarih"][test_maske],
-                         ufuk_gun=ufuk_gun)
+                         ufuk_gun=ufuk_gun, secilen=bilesik_secilen)
         except Exception:
             bp = None
         tum_c.append(bp if bp is not None
@@ -1028,6 +1053,10 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                                        gun_bazinda=gunluk_dilim)
         bilesik_dilim["auc"] = round(auc(C[iyi], Y[iyi]), 4)
         bilesik_dilim["kapsanan"] = int(iyi.sum())
+        # Which columns survived on their own, fold by fold, with the sign
+        # they went in with. A column that only shows up in one fold is a
+        # column the selection found by accident.
+        bilesik_dilim["secilen"] = bilesik_secilen
 
     return {
         "ok": True,

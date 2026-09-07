@@ -2629,6 +2629,15 @@ def cmd_meta(args: argparse.Namespace) -> int:
                   f"{b.get('auc', float('nan')):>8.3f}"
                   f"{100 * m.get('getiri', 0):>10.3f}%{mt:>8}"
                   f"{(ag_auc if ag_auc is not None else float('nan')):>8.3f}")
+        for u, b, _m, _a in bl:
+            sec = b.get("secilen") or []
+            if not sec:
+                continue
+            her = [x for x in sec[0] if all(x in k for k in sec[1:])]
+            print(f"    ufuk {u}: her katmanda secilenler -> "
+                  + (", ".join(her) if her else "(katmanlar arasi ortak yok)"))
+            for i, k in enumerate(sec, 1):
+                print(f"      kat {i}: " + ", ".join(k))
         print("    Duz ortalamanin ayarlanacak hicbir seyi yok. Agi geciyorsa")
         print("    ag yapi degil egitim penceresi buluyordur; o zaman cevap")
         print("    daha cok parametre degil daha az.")
