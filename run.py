@@ -2556,7 +2556,9 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     sabir=args.sabir, karistir=args.karistir,
                     tohum_sayisi=args.tohum_sayisi, siralama=args.siralama,
                     gunluk_dilim=not args.havuz_dilim,
-                    min_hacim=args.min_hacim, kaynak=args.kaynak)
+                    min_hacim=args.min_hacim, kaynak=args.kaynak,
+                    disla=tuple(x.strip() for x in str(args.disla).split(",")
+                                if x.strip()))
     if not d.get("ok"):
         ilk = next((r for r in d.get("sonuclar", []) if r.get("reason")), None)
         print(f"HATA: {d.get('reason') or (ilk or {}).get('reason')}",
@@ -2984,6 +2986,13 @@ def main() -> int:
                      help="kac farkli tohumla egitip ortalamasini alsin")
     mp2.add_argument("--siralama", action="store_true",
                      help="egitim hedefi 0/1 yerine gun ici yuzdelik sira")
+    mp2.add_argument("--ozellik-disla", default="", dest="disla",
+                     metavar="PARCA",
+                     help="adinda bu parcalardan biri gecen ozellikleri modele "
+                          "HIC verme (virgullu). Orn. --ozellik-disla "
+                          "dolar_hacim,amihud: kenar likidite ekseninden mi "
+                          "geliyor, yoksa geriye bir sey kaliyor mu. Egilim "
+                          "tanisi o sutunlari yine de raporlar.")
     mp2.add_argument("--kaynak", default="sinyal",
                      choices=["sinyal", "capraz"],
                      help="sinyal: yalnizca kurulum ateslenen barlar - "

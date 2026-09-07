@@ -102,7 +102,8 @@ def _ozellik_sutunlari(df: pd.DataFrame) -> list[str]:
 
 def hazirla(df: pd.DataFrame, ufuk: int,
             etiket_tipi: str = "kazanc", karistir: int = 0,
-            siralama: bool = False) -> dict | None:
+            siralama: bool = False,
+            disla: "tuple[str, ...]" = ()) -> dict | None:
     """Bir ufuk icin X, y, tarih ve kova taban olasiligi.
 
     Kategorik sutunlar (kurulum, oynaklik, likidite, trend_konumu) one-hot
@@ -117,6 +118,19 @@ def hazirla(df: pd.DataFrame, ufuk: int,
         return None
 
     oz = _ozellik_sutunlari(alt)
+    # Take a whole axis away and ask what is left.
+    #
+    # The strongest single column in the cross-section is dollar volume, with
+    # amihud right behind it, and both point the same way: the model prefers
+    # the thinner names. That is either a liquidity premium being harvested or
+    # the fact that the cache holds only companies still listed today and the
+    # ones that quietly died were mostly small. From inside the data those two
+    # look identical. What separates them is whether anything survives once
+    # the axis is gone.
+    if disla:
+        oz = [c for c in oz if not any(k in c for k in disla)]
+        if not oz:
+            return None
     # The peer group is deliberately NOT a feature. The label already has the
     # group mean taken out of it, so by construction there is nothing left for
     # a group dummy to predict -- and when one was handed to the model anyway
@@ -1069,7 +1083,8 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              gizli: int = 128, devir: int = 200, sabir: int = 15,
              karistir: int = 0, tohum_sayisi: int = 1,
              siralama: bool = False, gunluk_dilim: bool = True,
-             min_hacim: float = 0.0, kaynak: str = "sinyal") -> dict:
+             min_hacim: float = 0.0, kaynak: str = "sinyal",
+             disla: "tuple[str, ...]" = ()) -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -1116,7 +1131,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     pencere_ozet = None
     for u in ufuklar:
         veri = hazirla(df, u, etiket, karistir=karistir,
-                       siralama=siralama)
+                       siralama=siralama, disla=disla)
         if veri is None:
             sonuc.append({"ufuk": u, "ok": False, "reason": "yeterli satir yok"})
             continue
@@ -1195,6 +1210,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "frekans": frekans,
         "kaynak": kaynak,
+        "disla": list(disla),
         "ok": any(r.get("ok") for r in sonuc),
         "panel_satir": int(len(df)),
         "evren": evren,
