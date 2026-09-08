@@ -1192,6 +1192,150 @@ sayı iyi görünüyordu ve neden iyi göründüğü görünmüyordu.
 
 ---
 
+## Şirket haberi: 8-K bildirimleri (08.09.2026)
+
+Bir formasyon, şirket hakkında o sırada çıkan bir haberle birlikte bambaşka
+bir şey ifade edebilir. Modelin bugüne kadar bu farkı görecek hiçbir sütunu
+yoktu.
+
+### Neden haber başlığı değil de SEC bildirimi
+
+On yıllık geriye dönük bir ölçümde asıl zorluk haberin kendisi değil, zaman
+damgası güvenilir bir kayıt. 8-K, şirketin "maddi bir olay oldu" diye kendi
+yaptığı duyuru ve üç noktada kazınmış başlıklardan üstün:
+
+- **Kabul zamanı kaynağından ve saniye hassasiyetinde.** Haber arşivlerinde
+  yayın saati çoğu zaman yaklaşık, bazen sonradan düzeltilmiş.
+- **Şirkete CIK ile bağlı.** "Apple" geçen her makaleyi toplamak başka bir
+  şey.
+- **Kote dışı kalmış şirketlerin bildirimleri duruyor.** Fiyat önbelleğinin
+  baştan sona taşıdığı hayatta kalma yanlılığı burada yok.
+
+Karşılığında kaybedilen şey **metin**: 8-K "yönetici ayrıldı" der, iyi mi
+kötü mü demez. Yani olayın *türünü* biliyoruz, *tonunu* bilmiyoruz.
+
+Toplanan: **2.789 şirket, 238.401 bildirim**, 2016-01 → 2026-09. CIK
+bulunamayan 6 sembol, sıfır hata.
+
+### Bütün risk tek bir yerde: bildirimin hangi güne yazıldığı
+
+8-K'ların çoğu kapanıştan sonra dosyalanıyor, bilanço (2.02) bildirimlerinin
+neredeyse tamamı öyle. Dosyalama gününe yazarsak o günün kapanışında
+hesaplanan bir özellik henüz olmamış bir olayı görmüş olur — ve en büyük
+fiyat hareketi tam onun ertesinde gerçekleşir. Yani hata ölçülebilir ve
+tamamen sahte bir kenar üretir.
+
+Bu yüzden her şey `etkin_gun` ile hizalanıyor: kabul saati New York'ta
+16:00'dan önceyse dosyalama günü, sonraysa bir sonraki gün.
+
+İlk sürüm bunu **tehlikeli yönde** yanlış yapıyordu. Yaz saatini görmezden
+gelip sabit UTC-5 kullanıyor, yorumunda da bunun "temkinli" olduğu
+yazıyordu. Tam tersiymiş: temmuzda 20:30 UTC gerçekte 16:30 EDT'dir,
+kapanıştan sonra, ama UTC-5 ile 15:30 hesaplanıp aynı güne yazılıyordu.
+Gerçek New York saatine geçince AAPL'ın bilanço bildirimlerinin kayma oranı
+%30'dan %100'e çıktı. Test artık bir kış ve bir yaz vakasını birlikte
+kilitliyor.
+
+### Tanımlayıcı: olay çevresinde ne oluyor
+
+Kovalar sıfıra karşı değil, **hiç bildirimi olmayan satırlara karşı, gün
+eşleşmeli** ölçülüyor. Etiket akran medyanına göre arındırılmış ve sağa
+çarpık, yani her kova pozitif ortalama verir; sıfıra karşı test etmek
+kimsenin sormadığı bir soruyu cevaplar.
+
+**Kesit paneli (855.919 satır, 499 gün):**
+
+| Son bildirimden bu yana | N | Budanmış | Fark | t |
+|---|---:|---:|---:|---:|
+| olay günü | 34.156 | 0.633% | −0.423% | −0.79 |
+| 1-4 bar sonra | 116.968 | 0.675% | −0.381% | −0.71 |
+| 5-20 bar sonra | 305.175 | 0.661% | −0.329% | −0.57 |
+| 21-62 bar sonra | 255.027 | 0.741% | −0.005% | −0.01 |
+| bildirim yok | 144.593 | 0.840% | taban | — |
+
+Hiçbiri anlamlı. Türe göre bakıldığında tek çıkan `sonuc` (bilanço):
+−%0.888, t=−2.47 — ve **negatif**. `kotasyon` ham ortalamada %25.06
+görünüyor ama budanmışı %6.09; 2.844 satırda birkaç isim taşıyor.
+
+### Asıl soru: aynı kurulum, bildirim varken ve yokken
+
+Sinyal paneli (1.861.215 satır). Her kurulum kendi içinde, son 5 barda
+bildirim olan ve olmayan satırlara bölünüyor:
+
+| Kurulum | Olaylı | Olaysız | Fark | t |
+|---|---:|---:|---:|---:|
+| nr7_ic_bar | 0.604% | 0.897% | −0.730% | −1.72 |
+| rsi2_asiri_satim | 0.613% | 0.814% | −0.678% | **−2.41** |
+| **yutan_ayi** | 0.680% | 0.546% | **+0.470%** | **+2.08** |
+| cekic | 0.225% | 0.550% | −0.415% | −1.55 |
+| hacim_kurumasi | 0.252% | 0.816% | −0.394% | −1.43 |
+| boga_yutan | 0.773% | 0.894% | −0.391% | −1.35 |
+| ma20_geri_cekilme | 0.440% | 0.559% | −0.332% | **−2.02** |
+| uc_gun_geri_cekilme | 0.741% | 0.832% | −0.205% | −0.85 |
+| bosluk_dolumu | 0.798% | 1.654% | −0.167% | −0.19 |
+| dagitim_gunu | 0.679% | 1.002% | −0.164% | −0.62 |
+| hacimli_kirilim | 1.000% | 1.012% | −0.065% | −0.22 |
+| bollinger_sikismasi | 0.481% | 0.805% | −0.037% | −0.12 |
+
+**On iki kurulumun on biri, bildirim varken daha kötü.** Tek istisna
+`yutan_ayi` ve o zaten bir **short** formasyonu — yani "hisse için kötü",
+"kurulum için iyi" demek. Yön kendi içinde tutarlı.
+
+İşaret testi: 11/12 aynı yönde → p=0.0063; short'un işareti çevrilince 12/12
+→ p=0.0005. **Ama kurulumlar bağımsız değil** — aynı günlerde ve aynı
+isimlerde üst üste biniyorlar, dolayısıyla bu bir üst sınır, kanıt değil.
+
+Sinyal satırlarında olay sütunlarının kendi gün-içi sıra korelasyonu da aynı
+yöne bakıyor:
+
+```
+olay_denetci   IC -0.0176  t -3.51      olay_regfd     IC -0.0093  t -2.84
+olay_yonetim   IC -0.0081  t -2.92      olay_sozlesme  IC -0.0067  t -2.35
+```
+
+Dördü de negatif: denetçi değişikliği, yönetici değişikliği, Reg FD
+açıklaması ve önemli sözleşme, hepsi kurulumun ardından akranlarına göre
+**daha düşük** getiriye işaret ediyor.
+
+### Katman-dışı: model bunu kullanabiliyor mu
+
+Hayır.
+
+| Panel | Olay sütunlarıyla | Olaysız |
+|---|---:|---:|
+| Kesit, ≥$5M | +1.212% / t=4.49 | +1.293% / t=5.12 |
+| Sinyal, ≥$20M | +0.280% / t=0.49 | +0.432% / t=0.79 |
+
+İkisinde de **biraz daha kötü**, ikisinde de fark anlamsız. Kesitte 13 olay
+sütununun en güçlüsü |t|=1.30; |t|≥3'ü geçen 15 sütunun yalnızca 1'i olay
+sütunu ve listenin tepesi hâlâ likidite.
+
+### Ne öğrendik
+
+İlişki gerçek ve yönü tutarlı: **şirket bir şey açıkladıysa uzun bir
+formasyon daha az güvenilir.** Ama etkisi, 21 günlük ufukta *hangi hisseyi
+alacağını* değiştirecek kadar büyük değil.
+
+Fark şurada: tanımlayıcı tablo ortalama bir ilişki görüyor, model ise bugün
+bir sıralama üretmek zorunda. IC değerleri 0.007-0.018 mertebesinde; bu, bir
+güven düşürücü olarak anlamlı ama bir seçici olarak değersiz. Ve modelin
+koruyacağı bir kenarı olmadığı için — sinyal paneli t=0.49 ile zaten
+sıfırda — güven düşürmenin tutunacak bir yeri yok.
+
+Aynı sebeple "son 5 günde bildirim varsa uzun kurulumu atla" şeklinde bir
+veto kuralı da denenmedi: kesit panelinde o farkın kendisi −%0.080, t=−0.54.
+
+### Kalıcı olarak eklenenler
+
+`src/olay.py` (EDGAR çekici, kapanış-sonrası hizalama, bar bazında
+özellikler, etki tablosu), `run.py olay cek|ekle|etki`, ve 13 olay sütunu.
+Olay sütunları panel derlemesinin **içinde değil**, sonradan birleştirmeyle
+ekleniyor: yalnızca (hisse, tarih)'e bağlılar, dolayısıyla her yeni bildirim
+için 2600 hissenin 93 göstergesini yeniden hesaplamak gerekmiyor — kırk
+dakika yerine bir dakika.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
@@ -1203,6 +1347,10 @@ sayı iyi görünüyordu ve neden iyi göründüğü görünmüyordu.
   kayma düşülmemiş. İnce likiditede bu fark, ölçülen kenardan büyük olabilir.
 - **Kapanış fiyatından giriş varsayılıyor**: sinyal kapanışta oluşuyor, giriş
   de kapanışta sayılıyor. Gerçekte ertesi açılışa kalır.
+- **Olayın tonu bilinmiyor.** 8-K "yönetici ayrıldı" der, iyi mi kötü mü
+  demez. Ton için başlık metni gerekiyor ve o, on yıl geriye ücretsiz olarak
+  bulunamıyor. Yahoo'nun haber ucu ayakta ama yalnızca güncel haber veriyor,
+  yani canlı tarama için kullanılabilir, geriye dönük ölçüm için değil.
 - **Ağ, düz ortalamayı geçmiyor.** Üç katman, dropout, erken durdurma ve beş
   tohumlu topluluk, ayarlanacak hiçbir şeyi olmayan bir eşit-ağırlık
   ortalamasıyla aynı getiriyi veriyor (+%1.207 / t=5.60'a karşı +%1.293 /

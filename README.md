@@ -977,6 +977,62 @@ What survives is five-day reversal, the one non-liquidity column above
 |t| ≥ 3, stable in the later folds. Real, small, and reversal is precisely the
 strategy transaction costs eat first.
 
+### What the company itself said
+
+A setup means one thing on a quiet week and something else the morning after
+the company put out news, and nothing in the model could tell the difference.
+
+SEC 8-K filings are the right record for measuring that over ten years,
+better than scraped headlines on the three counts that decide it: the
+acceptance time comes from the source and is exact to the second, the filing
+is bound to a company by CIK rather than by name matching, and delisted
+companies' filings are still there, so the survivorship problem that runs
+through the price cache does not run through this. What is given up is the
+text --- an 8-K says an officer left, not whether that was good news. 2,789
+companies, 238,401 filings, 2016 to 2026.
+
+The whole risk is in which day a filing counts for. Most 8-Ks are accepted
+after the close and the earnings ones almost always are, so writing one to
+its filing date lets that day's bar see an event that has not happened yet,
+and the largest move is precisely the one that follows. The first version of
+that conversion was wrong in the dangerous direction: it ignored daylight
+saving and used a fixed UTC-5, with a comment claiming that was the cautious
+choice. July's 20:30 UTC is 16:30 in New York, after the close, and UTC-5
+computes 15:30 and files it under the same day. On real New York time,
+Apple's earnings filings went from 30% shifted to 100%.
+
+Descriptively the relationship is there and it is consistent. Splitting each
+setup by whether the company had filed anything in the previous five bars,
+**eleven of the twelve setups do worse with a filing** --- and the twelfth is
+a bearish engulfing, a short setup, which does better, so the sign is right
+there too. Three clear |t| = 2 (rsi2 −0.68%, ma20 pullback −0.33%, bearish
+engulfing +0.47%), and on setup rows four filing types clear |t| ≥ 2.3 on
+their own, all negative: auditor change −3.51, officer change −2.92, Reg FD
+−2.84, material agreement −2.35. A sign test on 11 of 12 gives p = 0.006,
+which is an upper bound rather than a result, because the setups overlap in
+time and in names.
+
+Out of fold, the model cannot use any of it:
+
+| Panel | With filing columns | Without |
+|---|---:|---:|
+| Cross-section, ≥$5M | +1.212% / t=4.49 | +1.293% / t=5.12 |
+| Signal rows, ≥$20M | +0.280% / t=0.49 | +0.432% / t=0.79 |
+
+Slightly worse both times, neither difference meaningful. Of the fifteen
+columns clearing |t| ≥ 3 exactly one is a filing column, and the top of that
+list is still liquidity.
+
+So the effect is real and too small to change which stock you would buy. The
+descriptive table sees an average relationship; the model has to produce an
+ordering today, and an IC of 0.007 to 0.018 is a reason to trust a pattern
+less rather than a reason to prefer one name over another. There is also
+nothing for it to protect: the setup model sits at t = 0.49 with or without.
+
+The filing columns are joined onto the panel rather than computed inside the
+build, because they depend only on (ticker, date) --- a minute instead of the
+forty it takes to recompute ninety-three indicators for 2,600 stocks.
+
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
 ---
