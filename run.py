@@ -2185,7 +2185,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                         frekans=args.frekans, gruplar=gruplar,
                         capraz_adim=args.capraz_adim,
-                        sadece_capraz=args.sadece_capraz)
+                        sadece_capraz=args.sadece_capraz,
+                        olaylar=not args.olaysiz)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
@@ -2564,6 +2565,62 @@ def cmd_gecmis(args: argparse.Namespace) -> int:
     print()
     print(f"  Panel: python run.py kisa panel --frekans 1d "
           f"--period {args.period} --ufuklar 21")
+    return 0
+
+
+def cmd_olay(args: argparse.Namespace) -> int:
+    """Sirkete ozel olaylar: SEC 8-K bildirimleri."""
+    from src import olay as ol
+
+    try:
+        evren, _ = universe.build(["smallcap", "midcap", "wsb"])
+    except Exception as exc:
+        print(f"HATA: evren kurulamadi ({exc})", file=sys.stderr)
+        return 1
+    semboller = list(evren)
+    if args.limit:
+        semboller = semboller[:args.limit]
+
+    print("=" * 78)
+    print(f"SIRKET OLAYLARI — SEC 8-K, {args.baslangic} sonrasi")
+    print("=" * 78)
+
+    if args.olay_action == "kapsam":
+        k = ol.kapsam(semboller, baslangic=args.baslangic)
+        if not k.get("ok"):
+            print("  Onbellekte olay yok.")
+            print(f"  Indirmek icin: python run.py olay cek "
+                  f"--baslangic {args.baslangic}")
+            return 0
+        print(f"  {k['hisse']:,} hisse · {k['olay']:,} bildirim · "
+              f"hisse basina ortalama {k['olay_ortalama']}")
+        print(f"  {k['ilk']} .. {k['son']}")
+        print(f"  evrenin %{100 * k['hisse'] / max(len(semboller), 1):.0f}'i")
+        return 0
+
+    print(f"  {len(semboller):,} sembol · istekler arasi ~{args.bekleme:.2f}s")
+    print("  SEC saniyede 10 istege izin veriyor ve kendinizi tanitmanizi "
+          "istiyor.")
+    print("  Tanitici: SEC_USER_AGENT ortam degiskeni.")
+    print()
+
+    def ilerleme(i, n, yazildi, atlanan):
+        print(f"      {i:,}/{n:,} · yazildi {yazildi:,} · gecildi {atlanan:,}",
+              flush=True)
+
+    d = ol.cek(semboller, baslangic=args.baslangic, yenile=args.yenile,
+               bekle=args.bekleme, ilerleme=ilerleme)
+    print()
+    print(f"  istenen {d['istenen']:,} · onbellekte olan {d['atlandi']:,} · "
+          f"yazilan {d['yazildi']:,}")
+    print(f"  CIK bulunamayan {d['ciksiz']:,} · hatali {d['hatali']:,}")
+    if d.get("durduruldu"):
+        print(f"  DURDURULDU — {d['durduruldu']}")
+        print("  Tekrar calistirildiginda kaldigi yerden devam eder.")
+    k = ol.kapsam(semboller, baslangic=args.baslangic)
+    if k.get("ok"):
+        print(f"  Onbellek: {k['hisse']:,} hisse · {k['olay']:,} bildirim · "
+              f"{k['ilk']} .. {k['son']}")
     return 0
 
 
@@ -2948,6 +3005,10 @@ def main() -> int:
                       help="yalnizca ilk N sembol (deneme icin)")
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
+    kv_p.add_argument("--olaysiz", action="store_true",
+                      help="panel: sirket olayi (8-K) sutunlarini EKLEME. "
+                           "Kenarin olaylardan gelip gelmedigini ayirmak "
+                           "icin ayni paneli iki kez kurmak gerekiyor.")
     kv_p.add_argument("--sadece-capraz", action="store_true",
                       dest="sadece_capraz",
                       help="panel: yalnizca capraz kesit tablosunu kur, "
@@ -3008,6 +3069,20 @@ def main() -> int:
     gp.add_argument("--limit", type=int, default=None)
     gp.add_argument("--benchmark", default="SPY")
     gp.add_argument("--yenile", action="store_true",
+                    help="onbellekte olani da yeniden indir")
+
+    op = sub.add_parser("olay", aliases=["events"],
+                        help="sirkete ozel olaylar (SEC 8-K bildirimleri)")
+    op.add_argument("olay_action", nargs="?", default="kapsam",
+                    choices=["kapsam", "cek"],
+                    help="kapsam: onbellekte ne var - cek: indir")
+    op.add_argument("--baslangic", default="2016-01-01",
+                    help="bu tarihten sonraki bildirimler. Onbellek anahtari "
+                         "budur; panel ayni deger ile okur.")
+    op.add_argument("--bekleme", type=float, default=0.12,
+                    help="istekler arasi saniye (SEC siniri 10/sn)")
+    op.add_argument("--limit", type=int, default=None)
+    op.add_argument("--yenile", action="store_true",
                     help="onbellekte olani da yeniden indir")
 
     mp2 = sub.add_parser("meta", help="meta-model: kurulum tutacak mi? "
@@ -3113,6 +3188,8 @@ def main() -> int:
         return cmd_learn(args)
     if args.cmd == "meta":
         return cmd_meta(args)
+    if args.cmd in ("olay", "events"):
+        return cmd_olay(args)
     if args.cmd in ("gecmis", "bargecmis"):
         return cmd_gecmis(args)
     if args.cmd in ("intraday", "gunici"):
