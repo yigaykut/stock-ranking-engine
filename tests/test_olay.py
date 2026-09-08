@@ -193,6 +193,69 @@ check("ani yigilma yogunlugu yukari cikariyor",
       f"{float(fy['olay_yogunluk'].iloc[506]):.2f} vs {sakin:.2f}")
 
 print()
+print("=" * 72)
+print("7) ETKI TABLOSU EKILMIS FARKI BULUYOR")
+print("=" * 72)
+
+# Sentetik bir panel: olaydan sonraki bes barda gercek bir fark var, baska
+# hicbir yerde yok. Tablo bunu bulmali ve bulmadigi yerde de bulmamali.
+r7 = np.random.default_rng(5)
+n_hisse, n_gun = 60, 300
+gunler = pd.DatetimeIndex(pd.bdate_range("2023-01-01", periods=n_gun))
+satirlar = []
+for h in range(n_hisse):
+    olay_barlari = set(range(r7.integers(5, 25), n_gun, int(r7.integers(40, 70))))
+    son = -999
+    for i, g in enumerate(gunler):
+        if i in olay_barlari:
+            son = i
+        uzaklik = i - son if son >= 0 else 999
+        # Olay sonrasi ilk bes barda +%1, digerlerinde sifir; ustune gurultu.
+        y = (0.01 if uzaklik <= 4 else 0.0) + r7.normal(0, 0.02)
+        satirlar.append({
+            "tarih": g, "ticker": f"T{h}", "kurulum": "a" if h % 2 else "b",
+            "olay_gun_once": float(min(uzaklik, 63)),
+            "olay_var5": float(uzaklik <= 4),
+            "olay_sonuc": float(uzaklik <= 20),
+            "akranmed_21g": y,
+        })
+panel = pd.DataFrame(satirlar)
+e = ol.etki(panel)
+
+check("tablo uretildi", e.get("ok"), str(e.get("reason")))
+kova = {x["kova"]: x for x in e["mesafe"]}
+check("olay sonrasi ilk barlar yukari",
+      kova["1-4 bar sonra"]["ortalama"] > 0.005,
+      f"%{100 * kova['1-4 bar sonra']['ortalama']:.2f}")
+check("uzaktaki barlar sifir civari",
+      abs(kova["21-62 bar sonra"]["ortalama"]) < 0.003,
+      f"%{100 * kova['21-62 bar sonra']['ortalama']:.2f}")
+check("ekilmis fark anlamli cikiyor",
+      (kova["1-4 bar sonra"]["t_nw"] or 0) > 3,
+      str(kova["1-4 bar sonra"]["t_nw"]))
+
+# Fark yoksa tablo fark uydurmamali.
+duz = panel.copy()
+duz["akranmed_21g"] = r7.normal(0, 0.02, len(duz))
+e2 = ol.etki(duz)
+kova2 = {x["kova"]: x for x in e2["mesafe"]}
+check("fark yokken hicbir kova one cikmiyor",
+      all(abs(kova2[k]["t_nw"] or 0) < 3 for k in kova2),
+      str({k: kova2[k]["t_nw"] for k in kova2}))
+
+# Etkilesim tablosu iki kurulumu da gormeli.
+check("etkilesim tablosu kurulumlari ayirdi",
+      {x["kurulum"] for x in e["etkilesim"]} == {"a", "b"},
+      str([x["kurulum"] for x in e["etkilesim"]]))
+check("etkilesim farki dogru yonde",
+      all(x["fark"] > 0.005 for x in e["etkilesim"]),
+      str([round(x["fark"], 4) for x in e["etkilesim"]]))
+
+# Olay sutunu olmayan panel sessizce yanlis cevap vermemeli.
+check("olay sutunu yoksa acikca soyluyor",
+      not ol.etki(panel.drop(columns=["olay_gun_once"])).get("ok"))
+
+print()
 if fails:
     print(f"{fails} KONTROL BASARISIZ")
     raise SystemExit(1)
