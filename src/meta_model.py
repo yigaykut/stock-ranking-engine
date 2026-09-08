@@ -97,17 +97,24 @@ def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
     # run. The label columns keep their width: a rank target and a winsorised
     # mean cost almost nothing to store and I would rather not think about
     # rounding in the one column the answer is measured on.
-    basliklar = pd.read_csv(p, nrows=0).columns
-    metin = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon")
-    tipler = {c: np.float32 for c in basliklar
-              if c not in metin
+    # Hangi sutunun sayisal oldugunu isim listesinden tahmin etmek yerine
+    # veriye sormak. Ilk surum sabit bir metin listesi tutuyordu ve kesit
+    # panelinde calisiyordu; sinyal panelinde oynaklik/likidite/trend_konumu
+    # gibi kategorik sutunlar var ve okuma "could not convert 'orta'" ile
+    # patladi. Ornek satirlar bunu bir kez ve kesin soyluyor.
+    ornek = pd.read_csv(p, nrows=2000)
+    sayisal = set(ornek.select_dtypes(include="number").columns)
+    tipler = {c: np.float32 for c in ornek.columns
+              if c in sayisal
               and not c.startswith(("fazla_", "kazanc_", "bariyer", "akran"))}
+    basliklar = ornek.columns
+    del ornek
     # The text columns were the larger half of the bill. Ticker, setup name,
     # frequency and side repeat down hundreds of thousands of rows, and as
     # Python strings that is a pointer plus an object each -- more than every
     # indicator put together. As categories it is one byte a row.
-    tipler.update({c: "category" for c in ("ticker", "frekans", "kurulum",
-                                           "yon") if c in basliklar})
+    tipler.update({c: "category" for c in basliklar
+                   if c not in sayisal and c not in ("tarih", "zaman")})
     tarihler = [c for c in ("tarih", "zaman") if c in basliklar]
     # The liquidity floor is applied while reading rather than after. Half
     # the rows are about to be thrown away and there is no reason to have

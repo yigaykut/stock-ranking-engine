@@ -810,8 +810,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           yol: Path | None = None,
           ilerleme: "callable | None" = None,
           frekans: str = "1d", gruplar: dict | None = None,
-          capraz_adim: int = 5, sadece_capraz: bool = False,
-          olaylar: bool = True) -> dict:
+          capraz_adim: int = 5, sadece_capraz: bool = False) -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -904,25 +903,6 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             gunler = _gunluk_indeks(df.index)
             hiza = gunler if gun_bazli else _zaman_indeks(df.index)
 
-            # What the company itself said, and when.
-            #
-            # A setup means one thing on a quiet week and something else the
-            # morning after the company filed an 8-K. These columns say how
-            # long ago the last filing was, how many there have been lately,
-            # and what kind -- results, an officer leaving, a material
-            # agreement. They are aligned on the filing's EFFECTIVE day, not
-            # its filing date: most 8-Ks are accepted after the close and the
-            # earnings ones almost always are, so using the filing date would
-            # let a bar see an event that had not happened yet.
-            olay_oz = None
-            if olaylar:
-                try:
-                    from . import olay as ol
-
-                    olay_oz = ol.ozellikler(ol.oku(tk), gunler)
-                except Exception:
-                    olay_oz = None
-
             # Second label alongside the first: did the target come before
             # the stop. Kept as extra columns rather than replacing anything,
             # so both questions can be measured on the same rows.
@@ -964,9 +944,6 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                         kol[sut] = genis[sut].to_numpy()[var]
                 for sut in ks.columns:
                     kol[sut] = ks[sut].to_numpy()[var]
-                if olay_oz is not None:
-                    for sut in olay_oz.columns:
-                        kol[sut] = olay_oz[sut].to_numpy()[var]
                 for ufuk, g_ in etiketler.items():
                     fz = g_.to_numpy()[var]
                     kol[f"fazla_{ufuk}g"] = fz
@@ -999,9 +976,6 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 cx["grup"] = np.int16(kod)
                 for c in sut:
                     cx[c] = genis[c].to_numpy()[tut_gun]
-                if olay_oz is not None:
-                    for sut in olay_oz.columns:
-                        cx[sut] = olay_oz[sut].to_numpy()[tut_gun]
                 for ufuk, g_ in etiketler.items():
                     cx[f"fazla_{ufuk}g"] = g_.to_numpy()[tut_gun]
                 # Which of this stock's bars a setup actually fired on. The

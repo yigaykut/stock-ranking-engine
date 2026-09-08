@@ -42,6 +42,7 @@ from __future__ import annotations
 
 import os
 import time
+from pathlib import Path
 from datetime import datetime, timedelta, timezone
 from zoneinfo import ZoneInfo
 
@@ -314,6 +315,76 @@ def ozellikler(olaylar: "pd.DataFrame | None", gunler: pd.DatetimeIndex,
     return bos
 
 
+def panele_ekle(yol, period: str = "10y", baslangic: str = "2016-01-01",
+                parca: int = 250_000) -> dict:
+    """Var olan bir panele olay sutunlarini ekler.
+
+    Bu is neden panel kurulumunun ICINDE degil: olay ozellikleri yalnizca
+    (hisse, tarih) ciftine bagli. Gostergelerin hesabina, kovalara, etikete
+    hicbir sey borclu degiller. Agir dongunun icine konduklarinda her yeni
+    bildirim 2600 hissenin 93 gostergesini bastan hesaplatiyordu -- kirk
+    dakika, ve makinede bellek dararsa hic bitmiyor.
+
+    Pencere hesabi HISSENIN TAM GUNLUK SERISI uzerinde yapilir, panelin
+    tarihleri uzerinde degil. Kesit paneli her besinci gunu tutuyor; "son 21
+    bar" o tarihler uzerinde sayilsaydi 105 takvim gunu demek olurdu ve
+    bayraklar dort kat uzun yasardi.
+    """
+    yol = Path(yol)
+    if not yol.exists():
+        return {"ok": False, "reason": f"{yol} yok"}
+
+    anahtar = pd.read_csv(yol, usecols=["ticker", "tarih"],
+                          parse_dates=["tarih"])
+    parcalar, kapsanan, olaysiz = [], 0, 0
+    for tk, alt in anahtar.groupby("ticker", sort=False):
+        hit = _cache.peek("yahoo", f"{tk}:{period}")
+        if not hit or not hit[0] or hit[0].get("history") is None:
+            continue
+        tam = pd.DatetimeIndex(hit[0]["history"].index)
+        try:
+            tam = tam.tz_localize(None) if tam.tz is None else tam.tz_convert(None)
+        except (TypeError, AttributeError):
+            pass
+        tam = tam.normalize()
+        d = oku(tk, baslangic)
+        if d is None:
+            olaysiz += 1
+        f = ozellikler(d, tam)
+        # Panelin tarihlerine indir. reindex, panelde olup barlarda olmayan
+        # bir tarih varsa NaN birakir; onlar asagida "olay yok" ile dolar.
+        alt_f = f.reindex(pd.DatetimeIndex(alt["tarih"]).normalize())
+        alt_f.index = alt.index
+        parcalar.append(alt_f)
+        kapsanan += 1
+    if not parcalar:
+        return {"ok": False, "reason": "hicbir hisse eslesmedi"}
+
+    tablo = pd.concat(parcalar).reindex(anahtar.index)
+    del parcalar
+    varsayilan = ozellikler(None, pd.DatetimeIndex([pd.Timestamp("2020-01-01")]))
+    for c in tablo.columns:
+        tablo[c] = tablo[c].fillna(float(varsayilan[c].iloc[0])).astype("float32")
+
+    gecici = yol.with_suffix(".olayli.csv")
+    gecici.unlink(missing_ok=True)
+    yazilan = 0
+    for blok in pd.read_csv(yol, chunksize=parca):
+        blok = blok.drop(columns=[c for c in tablo.columns if c in blok.columns])
+        birlesik = pd.concat(
+            [blok.reset_index(drop=True),
+             tablo.iloc[yazilan:yazilan + len(blok)].reset_index(drop=True)],
+            axis=1)
+        birlesik.to_csv(gecici, index=False, mode="a", header=not yazilan,
+                        float_format="%.6g")
+        yazilan += len(blok)
+        del blok, birlesik
+    gecici.replace(yol)
+    return {"ok": True, "yol": str(yol), "satir": yazilan,
+            "hisse": kapsanan, "olaysiz_hisse": olaysiz,
+            "sutun": list(tablo.columns)}
+
+
 def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
          ufuk_gun: int = 21) -> dict:
     """Bir olayin cevresinde ne oluyor — modelden bagimsiz olarak.
@@ -354,14 +425,48 @@ def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
         tv, _, _ = newey_west_t(g.to_numpy(), lag=max(1, int(ufuk_gun)))
         return None if not np.isfinite(tv) else round(float(tv), 2)
 
-    def _satir(ad, maske):
+    def _gunluk(maske):
+        if not maske.any():
+            return None
+        return pd.Series(y[maske]).groupby(gun[maske].to_numpy()).mean()
+
+    def _fark(maske, taban_maske):
+        """Bu kovanin gunluk ortalamasi eksi taban kovanin AYNI gundeki hali.
+
+        Sifira karsi test etmek burada yanlis soru. Etiket akran medyanina
+        gore arindirilmis ve dagilimi saga carpik, yani her kova pozitif bir
+        ortalama veriyor; ilginc olan kovalar ARASINDAKI fark. Gun bazinda
+        eslestirmek piyasa gununu de aradan cikariyor.
+        """
+        a, b = _gunluk(maske), _gunluk(taban_maske)
+        if a is None or b is None:
+            return None, None
+        d_ = (a - b).dropna()
+        if len(d_) < 20:
+            return None, None
+        tv, _, _ = newey_west_t(d_.to_numpy(), lag=max(1, int(ufuk_gun)))
+        return (round(float(d_.mean()), 5),
+                None if not np.isfinite(tv) else round(float(tv), 2))
+
+    def _satir(ad, maske, taban_maske=None):
+        # Budanmis ortalama: ust ve alt %1 disarida. Ham ortalamanin yaninda
+        # duruyor cunku bu panelde bir avuc satirin ortalamayi tasidigini
+        # gorduk ve olay satirlarinda risk daha buyuk -- en buyuk hareketler
+        # tam oralarda. Ikisi cok ayrisiyorsa sayi birkac isme aittir.
+        v = y[maske] if maske.any() else np.array([])
+        if len(v) > 100:
+            alt, ust = np.nanpercentile(v, [1, 99])
+            budanmis = float(np.nanmean(np.clip(v, alt, ust)))
+        else:
+            budanmis = float(np.nanmean(v)) if len(v) else None
+        fark, fark_t = (_fark(maske, taban_maske)
+                        if taban_maske is not None else (None, None))
         return {"kova": ad, "n": int(maske.sum()),
                 "gun": int(gun[maske].nunique()) if maske.any() else 0,
-                "ortalama": round(float(np.nanmean(y[maske])), 5)
-                if maske.any() else None,
-                "ortanca": round(float(np.nanmedian(y[maske])), 5)
-                if maske.any() else None,
-                "t_nw": _t(maske)}
+                "ortalama": round(float(np.nanmean(v)), 5) if len(v) else None,
+                "budanmis": round(budanmis, 5) if budanmis is not None else None,
+                "pozitif": round(float(np.nanmean(v > 0)), 4) if len(v) else None,
+                "t_nw": _t(maske), "fark": fark, "fark_t": fark_t}
 
     once = pd.to_numeric(d["olay_gun_once"], errors="coerce").to_numpy()
     kovalar = [
@@ -371,7 +476,11 @@ def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
         ("21-62 bar sonra", (once >= 21) & (once < 63)),
         ("olay yok / cok eski", once >= 63),
     ]
-    mesafe = [_satir(ad, m) for ad, m in kovalar]
+    # Taban: son 62 barda hicbir bildirim olmayan satirlar. Her sey buna
+    # gore olculuyor.
+    taban = once >= 63
+    mesafe = [_satir(ad, m, None if ad.startswith("olay yok") else taban)
+              for ad, m in kovalar]
 
     tur = []
     for ad in OBEK:
@@ -380,8 +489,8 @@ def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
             continue
         m = pd.to_numeric(d[s_], errors="coerce").fillna(0).to_numpy() > 0
         if m.sum() >= 200:
-            tur.append(_satir(ad, m))
-    tur.sort(key=lambda r: -(r["ortalama"] or 0))
+            tur.append(_satir(ad, m, taban))
+    tur.sort(key=lambda r: -(r["fark"] or 0))
 
     etkilesim = []
     if "kurulum" in d.columns:
@@ -391,11 +500,11 @@ def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
             ile, siz = k & var5, k & ~var5
             if ile.sum() < 200 or siz.sum() < 200:
                 continue
-            a, b = _satir(f"{kid} · olayli", ile), _satir(f"{kid} · olaysiz", siz)
+            a, b = _satir(f"{kid} · olayli", ile, siz), _satir(
+                f"{kid} · olaysiz", siz)
             etkilesim.append({"kurulum": kid, "olayli": a, "olaysiz": b,
-                              "fark": round((a["ortalama"] or 0)
-                                            - (b["ortalama"] or 0), 5)})
-        etkilesim.sort(key=lambda r: -abs(r["fark"]))
+                              "fark": a["fark"], "fark_t": a["fark_t"]})
+        etkilesim.sort(key=lambda r: -abs(r["fark"] or 0))
 
     return {"ok": True, "etiket": etiket, "satir": int(len(d)),
             "olay_orani": round(float((once < 63).mean()), 4),

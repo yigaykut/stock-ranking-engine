@@ -2185,8 +2185,7 @@ def cmd_kisa(args: argparse.Namespace) -> int:
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                         frekans=args.frekans, gruplar=gruplar,
                         capraz_adim=args.capraz_adim,
-                        sadece_capraz=args.sadece_capraz,
-                        olaylar=not args.olaysiz)
+                        sadece_capraz=args.sadece_capraz)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
@@ -2585,6 +2584,25 @@ def cmd_olay(args: argparse.Namespace) -> int:
     print(f"SIRKET OLAYLARI — SEC 8-K, {args.baslangic} sonrasi")
     print("=" * 78)
 
+    if args.olay_action == "ekle":
+        from src import kalibrasyon as kb
+
+        hedef = (kb.capraz_yolu(args.frekans) if args.kaynak == "capraz"
+                 else kb.panel_yolu(args.frekans))
+        print(f"  hedef: {hedef.name}")
+        r = ol.panele_ekle(hedef, period=args.period,
+                           baslangic=args.baslangic)
+        if not r.get("ok"):
+            print(f"HATA: {r.get('reason')}", file=sys.stderr)
+            return 1
+        print(f"  {r['satir']:,} satir · {r['hisse']:,} hisse · "
+              f"{len(r['sutun'])} sutun eklendi")
+        if r["olaysiz_hisse"]:
+            print(f"  {r['olaysiz_hisse']:,} hissenin hic bildirimi yok "
+                  f"(bu bir bilgi, eksik veri degil)")
+        print(f"  Simdi: python run.py olay etki --kaynak {args.kaynak}")
+        return 0
+
     if args.olay_action == "etki":
         from src import meta_model as mm
 
@@ -2606,38 +2624,43 @@ def cmd_olay(args: argparse.Namespace) -> int:
         print(f"  satirlarin %{100 * r['olay_orani']:.0f}'inde son 62 barda "
               f"en az bir bildirim var")
         print()
-        print("  SON BILDIRIMDEN BU YANA GECEN SUREYE GORE")
-        print(f"  {'':<22}{'N':>9}{'GUN':>7}{'ORTALAMA':>11}"
-              f"{'ORTANCA':>10}{'t':>8}")
-        print("  " + "-" * 67)
-        for x in r["mesafe"]:
-            t = f"{x['t_nw']:+.2f}" if x["t_nw"] is not None else "-"
-            print(f"  {x['kova']:<22}{x['n']:>9,}{x['gun']:>7,}"
-                  f"{100 * (x['ortalama'] or 0):>10.3f}%"
-                  f"{100 * (x['ortanca'] or 0):>9.3f}%{t:>8}")
+        def _yaz(baslik, satirlar):
+            print(f"  {baslik}")
+            print(f"  {'':<22}{'N':>9}{'ORT':>9}{'BUDANMIS':>10}"
+                  f"{'POZ':>7}{'FARK':>9}{'t':>8}")
+            print("  " + "-" * 65)
+            for x in satirlar:
+                ft = f"{x['fark_t']:+.2f}" if x["fark_t"] is not None else "-"
+                fk = (f"{100 * x['fark']:>8.3f}%" if x["fark"] is not None
+                      else f"{'taban':>9}")
+                print(f"  {x['kova']:<22}{x['n']:>9,}"
+                      f"{100 * (x['ortalama'] or 0):>8.2f}%"
+                      f"{100 * (x['budanmis'] or 0):>9.3f}%"
+                      f"{100 * (x['pozitif'] or 0):>6.0f}%{fk}{ft:>8}")
+
+        _yaz("SON BILDIRIMDEN BU YANA GECEN SUREYE GORE", r["mesafe"])
+        print("    FARK: ayni gunlerde, hic bildirimi olmayan satirlara gore.")
+        print("    Sifira karsi test yanlis soru olurdu -- etiket saga carpik,")
+        print("    her kova pozitif ortalama verir. Ilginc olan aradaki fark.")
+        print("    BUDANMIS: ust/alt %1 disarida. ORT ile cok ayrisiyorsa")
+        print("    sayiyi birkac isim tasiyor demektir.")
         if r["tur"]:
             print()
-            print("  OLAYIN TURUNE GORE (son 21 barda o turden bildirim var)")
-            print(f"  {'':<22}{'N':>9}{'GUN':>7}{'ORTALAMA':>11}"
-                  f"{'ORTANCA':>10}{'t':>8}")
-            print("  " + "-" * 67)
-            for x in r["tur"]:
-                t = f"{x['t_nw']:+.2f}" if x["t_nw"] is not None else "-"
-                print(f"  {x['kova']:<22}{x['n']:>9,}{x['gun']:>7,}"
-                      f"{100 * (x['ortalama'] or 0):>10.3f}%"
-                      f"{100 * (x['ortanca'] or 0):>9.3f}%{t:>8}")
+            _yaz("OLAYIN TURUNE GORE (son 21 barda o turden bildirim var)",
+                 r["tur"])
         if r["etkilesim"]:
             print()
             print("  AYNI KURULUM, BILDIRIMLI VE BILDIRIMSIZ (son 5 bar)")
             print(f"  {'KURULUM':<20}{'OLAYLI':>10}{'N':>8}"
-                  f"{'OLAYSIZ':>11}{'N':>8}{'FARK':>10}")
-            print("  " + "-" * 67)
+                  f"{'OLAYSIZ':>11}{'N':>8}{'FARK':>10}{'t':>8}")
+            print("  " + "-" * 75)
             for x in r["etkilesim"]:
                 a, b = x["olayli"], x["olaysiz"]
+                ft = f"{x['fark_t']:+.2f}" if x.get("fark_t") is not None else "-"
                 print(f"  {x['kurulum']:<20}"
-                      f"{100 * (a['ortalama'] or 0):>9.3f}%{a['n']:>8,}"
-                      f"{100 * (b['ortalama'] or 0):>10.3f}%{b['n']:>8,}"
-                      f"{100 * x['fark']:>9.3f}%")
+                      f"{100 * (a['budanmis'] or 0):>9.3f}%{a['n']:>8,}"
+                      f"{100 * (b['budanmis'] or 0):>10.3f}%{b['n']:>8,}"
+                      f"{100 * (x['fark'] or 0):>9.3f}%{ft:>8}")
             print("    Fark buyukse formasyon tek basina okunmuyor demektir:")
             print("    ayni kurulum, sirket bir sey acikladiysa baska bir sey.")
         print()
@@ -3065,10 +3088,6 @@ def main() -> int:
                       help="yalnizca ilk N sembol (deneme icin)")
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
-    kv_p.add_argument("--olaysiz", action="store_true",
-                      help="panel: sirket olayi (8-K) sutunlarini EKLEME. "
-                           "Kenarin olaylardan gelip gelmedigini ayirmak "
-                           "icin ayni paneli iki kez kurmak gerekiyor.")
     kv_p.add_argument("--sadece-capraz", action="store_true",
                       dest="sadece_capraz",
                       help="panel: yalnizca capraz kesit tablosunu kur, "
@@ -3134,9 +3153,13 @@ def main() -> int:
     op = sub.add_parser("olay", aliases=["events"],
                         help="sirkete ozel olaylar (SEC 8-K bildirimleri)")
     op.add_argument("olay_action", nargs="?", default="kapsam",
-                    choices=["kapsam", "cek", "etki"],
+                    choices=["kapsam", "cek", "ekle", "etki"],
                     help="kapsam: onbellekte ne var - cek: indir - "
+                         "ekle: olay sutunlarini panele ekle - "
                          "etki: olay cevresinde ne oluyor (panelden)")
+    op.add_argument("--period", default="10y",
+                    help="ekle: bar onbellegi anahtari (pencereler tam "
+                         "gunluk seri uzerinde hesaplanir)")
     op.add_argument("--frekans", default="1d")
     op.add_argument("--kaynak", default="capraz",
                     choices=["sinyal", "capraz"],
