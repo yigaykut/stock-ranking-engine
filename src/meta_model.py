@@ -783,7 +783,12 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
     yumusak = bool(set(np.unique(y[np.isfinite(y)]).tolist()) - {0.0, 1.0})
     mu, sd = X.mean(0), X.std(0)
     sd[sd < 1e-9] = 1.0
-    Z = (X - mu) / sd
+    # Yerinde olceklendirme. X zaten bu cagriya ait bir kopya (cagiran
+    # maskeyle indeksliyor), yani uzerine yazmak kimseyi bozmuyor; ayri bir Z
+    # tutmak sinyal panelinde yarim gigabaytlik ikinci bir dizi demekti.
+    Z = X
+    Z -= mu
+    Z /= sd
 
     tr, val = _dogrulama_bol(tarih if tarih is not None else np.arange(len(y)))
     gun_val = (np.asarray(tarih)[val] if tarih is not None else None)
@@ -802,11 +807,16 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
     )
     opt = torch.optim.AdamW(net.parameters(), lr=lr, weight_decay=1e-3)
     kayip = nn.BCEWithLogitsLoss()
-    Xt = torch.tensor(Z, dtype=torch.float32)
+    # from_numpy ayni bellegi paylasir, tensor() kopyalar. Ayni sey.
+    Xt = torch.from_numpy(np.ascontiguousarray(Z, dtype=np.float32))
     yt = torch.tensor(y, dtype=torch.float32).unsqueeze(1)
-    Xtr, ytr = Xt[tr], yt[tr]
+    # Egitim satirlarini ayri bir tensora KOPYALAMAK yerine indeksleri tut ve
+    # yigin yigin oradan oku. Kopya, satir sayisi buyudukce girdinin kendisi
+    # kadar yer kapliyordu.
+    tr_idx = torch.from_numpy(np.flatnonzero(tr))
+    ytr_tam = yt
     rng = np.random.default_rng(seed)
-    n = len(Xtr)
+    n = len(tr_idx)
     yigin = 4096
 
     en_iyi, en_iyi_skor, bekleme = None, np.inf, 0
@@ -814,9 +824,9 @@ def _egit(X: np.ndarray, y: np.ndarray, seed: int = 7, epochs: int = 200,
         net.train()
         sira = rng.permutation(n)
         for i in range(0, n, yigin):
-            idx = sira[i:i + yigin]
+            idx = tr_idx[torch.from_numpy(sira[i:i + yigin])]
             opt.zero_grad()
-            kayip(net(Xtr[idx]), ytr[idx]).backward()
+            kayip(net(Xt[idx]), ytr_tam[idx]).backward()
             opt.step()
         if not val.any():
             continue
