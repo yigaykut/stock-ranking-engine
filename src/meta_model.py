@@ -75,7 +75,8 @@ def cikti_yolu(frekans: str, dizi: bool = False,
 #  Veri
 # =============================================================================
 def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
-                min_hacim: float = 0.0) -> pd.DataFrame | None:
+                min_hacim: float = 0.0,
+                etiket: str | None = None) -> pd.DataFrame | None:
     """Signal rows, or the whole cross-section.
 
     "sinyal" is the table of bars where one of the twelve detectors fired.
@@ -120,11 +121,21 @@ def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
     # the rows are about to be thrown away and there is no reason to have
     # built them first; on this machine the difference decided whether the
     # run finished at all.
-    if min_hacim > 0 and "dolar_hacim" in basliklar:
+    # Etiketi bos olan satirlar da okurken eleniyor. Ufkun sonuna denk gelen
+    # barlarda ileri getiri yok ve bu satirlar hazirla()'nin ilk isleminde
+    # zaten atiliyordu -- once kurup sonra atmak, sinyal panelinde bir kac yuz
+    # megabaytlik bir farktir ve makine tam orada dusuyordu.
+    suz = ((min_hacim > 0 and "dolar_hacim" in basliklar)
+           or (etiket and etiket in basliklar))
+    if suz:
         tutulan = []
         for parca in pd.read_csv(p, dtype=tipler, parse_dates=tarihler,
                                  chunksize=200_000):
-            tutulan.append(parca[parca["dolar_hacim"] >= min_hacim])
+            if min_hacim > 0 and "dolar_hacim" in parca.columns:
+                parca = parca[parca["dolar_hacim"] >= min_hacim]
+            if etiket and etiket in parca.columns:
+                parca = parca[parca[etiket].notna()]
+            tutulan.append(parca)
         df = pd.concat(tutulan, ignore_index=True, copy=False)
         tutulan.clear()
         gc.collect()
@@ -155,8 +166,12 @@ def hazirla(df: pd.DataFrame, ufuk: int,
     if etiket not in df.columns:
         return None
     # Boolean indexing already hands back a copy; asking for a second one
-    # doubles the largest frame in the process for nothing.
-    alt = df[df[etiket].notna()]
+    # doubles the largest frame in the process for nothing. And when the read
+    # has already dropped the unlabelled rows there is nothing left to filter,
+    # so the copy is skipped altogether -- on the signal panel that is a
+    # little over half a gigabyte.
+    maske = df[etiket].notna()
+    alt = df if bool(maske.all()) else df[maske]
     if len(alt) < MIN_SATIR:
         return None
 
@@ -1148,7 +1163,13 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     from . import kalibrasyon as kb
     from . import kisa_vade as kv
 
-    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim)
+    ufuklar = ufuklar or kv.ufuklar(frekans)
+    # Tek ufuk olculuyorsa etiket sutunu da okurken suzulebilir; birden
+    # fazlaysa satirlar ufuklar arasinda farkli oldugu icin suzulemez.
+    tek_etiket = (f"{etiket}_{ufuklar[0]}g"
+                  if ufuklar and len(ufuklar) == 1 else None)
+    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim,
+                     etiket=tek_etiket)
     if df is None or df.empty:
         return {"ok": False,
                 "reason": f"panel yok — once: python run.py kisa panel "
@@ -1179,7 +1200,6 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
                     "reason": f"hacim suzgecinden sonra {len(df)} satir kaldi"}
 
     kalib = kb.yukle(frekans=frekans)
-    ufuklar = ufuklar or kv.ufuklar(frekans)
     bg = kv.bar_gun(frekans)
 
     bars = _barlari_yukle(frekans, set(df["ticker"].unique())) if dizi else {}
