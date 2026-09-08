@@ -2585,6 +2585,66 @@ def cmd_olay(args: argparse.Namespace) -> int:
     print(f"SIRKET OLAYLARI — SEC 8-K, {args.baslangic} sonrasi")
     print("=" * 78)
 
+    if args.olay_action == "etki":
+        from src import meta_model as mm
+
+        d = mm.panel_yukle(args.frekans, kaynak=args.kaynak)
+        if d is None or d.empty:
+            print("HATA: panel yok. Once: python run.py kisa panel "
+                  f"--frekans {args.frekans}"
+                  + (" --sadece-capraz" if args.kaynak == "capraz" else ""),
+                  file=sys.stderr)
+            return 1
+        r = ol.etki(d, etiket=args.etiket)
+        if not r.get("ok"):
+            print(f"HATA: {r.get('reason')}", file=sys.stderr)
+            print("  Panelde olay sutunlari yoksa yeniden kurmak gerekiyor.",
+                  file=sys.stderr)
+            return 1
+        print(f"  kaynak {args.kaynak} · {r['satir']:,} satir · etiket "
+              f"{r['etiket']}")
+        print(f"  satirlarin %{100 * r['olay_orani']:.0f}'inde son 62 barda "
+              f"en az bir bildirim var")
+        print()
+        print("  SON BILDIRIMDEN BU YANA GECEN SUREYE GORE")
+        print(f"  {'':<22}{'N':>9}{'GUN':>7}{'ORTALAMA':>11}"
+              f"{'ORTANCA':>10}{'t':>8}")
+        print("  " + "-" * 67)
+        for x in r["mesafe"]:
+            t = f"{x['t_nw']:+.2f}" if x["t_nw"] is not None else "-"
+            print(f"  {x['kova']:<22}{x['n']:>9,}{x['gun']:>7,}"
+                  f"{100 * (x['ortalama'] or 0):>10.3f}%"
+                  f"{100 * (x['ortanca'] or 0):>9.3f}%{t:>8}")
+        if r["tur"]:
+            print()
+            print("  OLAYIN TURUNE GORE (son 21 barda o turden bildirim var)")
+            print(f"  {'':<22}{'N':>9}{'GUN':>7}{'ORTALAMA':>11}"
+                  f"{'ORTANCA':>10}{'t':>8}")
+            print("  " + "-" * 67)
+            for x in r["tur"]:
+                t = f"{x['t_nw']:+.2f}" if x["t_nw"] is not None else "-"
+                print(f"  {x['kova']:<22}{x['n']:>9,}{x['gun']:>7,}"
+                      f"{100 * (x['ortalama'] or 0):>10.3f}%"
+                      f"{100 * (x['ortanca'] or 0):>9.3f}%{t:>8}")
+        if r["etkilesim"]:
+            print()
+            print("  AYNI KURULUM, BILDIRIMLI VE BILDIRIMSIZ (son 5 bar)")
+            print(f"  {'KURULUM':<20}{'OLAYLI':>10}{'N':>8}"
+                  f"{'OLAYSIZ':>11}{'N':>8}{'FARK':>10}")
+            print("  " + "-" * 67)
+            for x in r["etkilesim"]:
+                a, b = x["olayli"], x["olaysiz"]
+                print(f"  {x['kurulum']:<20}"
+                      f"{100 * (a['ortalama'] or 0):>9.3f}%{a['n']:>8,}"
+                      f"{100 * (b['ortalama'] or 0):>10.3f}%{b['n']:>8,}"
+                      f"{100 * x['fark']:>9.3f}%")
+            print("    Fark buyukse formasyon tek basina okunmuyor demektir:")
+            print("    ayni kurulum, sirket bir sey acikladiysa baska bir sey.")
+        print()
+        print("  Bu tablo TUM span'i okur ve katman ayrimi yapmaz: veriyi")
+        print("  tarif eder, tahmin etmez.")
+        return 0
+
     if args.olay_action == "kapsam":
         k = ol.kapsam(semboller, baslangic=args.baslangic)
         if not k.get("ok"):
@@ -3074,8 +3134,15 @@ def main() -> int:
     op = sub.add_parser("olay", aliases=["events"],
                         help="sirkete ozel olaylar (SEC 8-K bildirimleri)")
     op.add_argument("olay_action", nargs="?", default="kapsam",
-                    choices=["kapsam", "cek"],
-                    help="kapsam: onbellekte ne var - cek: indir")
+                    choices=["kapsam", "cek", "etki"],
+                    help="kapsam: onbellekte ne var - cek: indir - "
+                         "etki: olay cevresinde ne oluyor (panelden)")
+    op.add_argument("--frekans", default="1d")
+    op.add_argument("--kaynak", default="capraz",
+                    choices=["sinyal", "capraz"],
+                    help="etki: hangi panel okunsun")
+    op.add_argument("--etiket", default="akranmed_21g",
+                    help="etki: hangi ileri getiri sutunu olculsun")
     op.add_argument("--baslangic", default="2016-01-01",
                     help="bu tarihten sonraki bildirimler. Onbellek anahtari "
                          "budur; panel ayni deger ile okur.")

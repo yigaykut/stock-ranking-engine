@@ -314,6 +314,94 @@ def ozellikler(olaylar: "pd.DataFrame | None", gunler: pd.DatetimeIndex,
     return bos
 
 
+def etki(panel: pd.DataFrame, etiket: str = "akranmed_21g",
+         ufuk_gun: int = 21) -> dict:
+    """Bir olayin cevresinde ne oluyor — modelden bagimsiz olarak.
+
+    Uc soru, uc tablo:
+
+    1. Son olaydan bu yana gecen sureye gore ileri getiri. Olay gunu, ertesi
+       hafta, ertesi ay, hic olay yok.
+    2. Olayin TURUNE gore. Bilanco ile yonetici ayriligi ayni sey degil.
+    3. Kurulum satirlarinda etkilesim: ayni kurulum, son bes gunde bir
+       bildirim varken ve yokken.
+
+    Ucuncusu kullanicinin asil sordugu sey: formasyon dogru gorunuyor olabilir
+    ama sirket ici bir haberle birlikte baska bir sey ifade eder.
+
+    Ortalamalarin yaninda MEDYAN ve gun sayisi da veriliyor. Bu panelde bir
+    avuc satirin ortalamayi tasidigini bir kez gorduk; olay satirlarinda risk
+    daha da buyuk, cunku en buyuk hareketler tam oralarda.
+    """
+    from .faktor_zaman import newey_west_t
+
+    if etiket not in panel.columns or "olay_gun_once" not in panel.columns:
+        return {"ok": False, "reason": f"{etiket} veya olay sutunlari yok"}
+    d = panel[panel[etiket].notna()]
+    if len(d) < 1000:
+        return {"ok": False, "reason": f"{len(d)} satir"}
+
+    gun = pd.DatetimeIndex(d["tarih"]).normalize()
+    y = pd.to_numeric(d[etiket], errors="coerce").to_numpy(dtype=float)
+    # Gunluk ortalamanin Newey-West t'si; satir bazinda bir t, ayni gunun
+    # satirlarini bagimsiz sayip orneklemi kat kat sisirirdi.
+    def _t(maske):
+        if maske.sum() < 50:
+            return None
+        g = pd.Series(y[maske]).groupby(gun[maske].to_numpy()).mean()
+        if len(g) < 10:
+            return None
+        tv, _, _ = newey_west_t(g.to_numpy(), lag=max(1, int(ufuk_gun)))
+        return None if not np.isfinite(tv) else round(float(tv), 2)
+
+    def _satir(ad, maske):
+        return {"kova": ad, "n": int(maske.sum()),
+                "gun": int(gun[maske].nunique()) if maske.any() else 0,
+                "ortalama": round(float(np.nanmean(y[maske])), 5)
+                if maske.any() else None,
+                "ortanca": round(float(np.nanmedian(y[maske])), 5)
+                if maske.any() else None,
+                "t_nw": _t(maske)}
+
+    once = pd.to_numeric(d["olay_gun_once"], errors="coerce").to_numpy()
+    kovalar = [
+        ("olay gunu", once == 0),
+        ("1-4 bar sonra", (once >= 1) & (once <= 4)),
+        ("5-20 bar sonra", (once >= 5) & (once <= 20)),
+        ("21-62 bar sonra", (once >= 21) & (once < 63)),
+        ("olay yok / cok eski", once >= 63),
+    ]
+    mesafe = [_satir(ad, m) for ad, m in kovalar]
+
+    tur = []
+    for ad in OBEK:
+        s_ = f"olay_{ad}"
+        if s_ not in d.columns:
+            continue
+        m = pd.to_numeric(d[s_], errors="coerce").fillna(0).to_numpy() > 0
+        if m.sum() >= 200:
+            tur.append(_satir(ad, m))
+    tur.sort(key=lambda r: -(r["ortalama"] or 0))
+
+    etkilesim = []
+    if "kurulum" in d.columns:
+        var5 = pd.to_numeric(d["olay_var5"], errors="coerce").fillna(0).to_numpy() > 0
+        for kid in sorted(pd.unique(d["kurulum"].astype(str))):
+            k = (d["kurulum"].astype(str) == kid).to_numpy()
+            ile, siz = k & var5, k & ~var5
+            if ile.sum() < 200 or siz.sum() < 200:
+                continue
+            a, b = _satir(f"{kid} · olayli", ile), _satir(f"{kid} · olaysiz", siz)
+            etkilesim.append({"kurulum": kid, "olayli": a, "olaysiz": b,
+                              "fark": round((a["ortalama"] or 0)
+                                            - (b["ortalama"] or 0), 5)})
+        etkilesim.sort(key=lambda r: -abs(r["fark"]))
+
+    return {"ok": True, "etiket": etiket, "satir": int(len(d)),
+            "olay_orani": round(float((once < 63).mean()), 4),
+            "mesafe": mesafe, "tur": tur, "etkilesim": etkilesim}
+
+
 def kapsam(semboller, baslangic: str = "2016-01-01") -> dict:
     """Onbellekte ne var: kac sirket, kac olay, hangi araliktan."""
     hisse = olay = 0
