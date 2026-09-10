@@ -2760,6 +2760,32 @@ def cmd_meta(args: argparse.Namespace) -> int:
         print("  Taban : kova bazli kalibrasyon")
     print()
 
+    if args.sadece_ic:
+        r = mm.ufuk_ic(args.frekans, kaynak=args.kaynak,
+                       ufuklar=_kisa_ufuklar(args) or (3, 5, 10, 21),
+                       etiket=args.etiket, min_hacim=args.min_hacim)
+        if not r.get("ok"):
+            print(f"HATA: {r.get('reason')}", file=sys.stderr)
+            return 1
+        uf = r["ufuklar"]
+        print(f"  {r['satir']:,} satir · {r['kaynak']} · etiket {r['etiket']}")
+        print()
+        print(f"  {'OZELLIK':<22}" + "".join(f"{'u=' + str(u):>16}" for u in uf))
+        print("  " + "-" * (22 + 16 * len(uf)))
+        for x in r["ozellikler"]:
+            sat = f"  {x['ozellik']:<22}"
+            for u in uf:
+                v = x["ufuk"].get(u)
+                sat += (f"{v['ic']:>9.4f}{v['t_nw']:>+7.1f}" if v
+                        else f"{'-':>16}")
+            print(sat)
+        print()
+        print("  |t|>=3 gecen sutun sayisi: "
+              + ", ".join(f"u={u}: {n}" for u, n in r["guclu_sayi"].items()))
+        print("  Ag egitilmedi. Bu tablo hangi ufkun denemeye deger oldugunu")
+        print("  soyler; tum span'i okur, katman ayrimi yapmaz.")
+        return 0
+
     maliyetler = tuple(float(x) for x in str(args.maliyet).split(",")
                        if x.strip())
     d = mm.calistir(args.frekans, ufuklar=_kisa_ufuklar(args),
@@ -3234,6 +3260,10 @@ def main() -> int:
                      help="kac farkli tohumla egitip ortalamasini alsin")
     mp2.add_argument("--siralama", action="store_true",
                      help="egitim hedefi 0/1 yerine gun ici yuzdelik sira")
+    mp2.add_argument("--sadece-ic", action="store_true", dest="sadece_ic",
+                     help="ag egitme; ozelliklerin ufuk ufuk gun ici sira "
+                          "korelasyonunu bastir. Tam kosu seksen model, ufuk "
+                          "secmek icin hicbiri gerekmiyor.")
     mp2.add_argument("--ozellik-disla", default="", dest="disla",
                      metavar="PARCA",
                      help="adinda bu parcalardan biri gecen ozellikleri modele "

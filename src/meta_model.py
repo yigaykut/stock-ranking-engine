@@ -692,6 +692,70 @@ def bilesik(X_egit: np.ndarray, getiri_egit: np.ndarray, gun_egit,
     return toplam / len(secili)
 
 
+def ufuk_ic(frekans: str = "1d", kaynak: str = "capraz",
+            ufuklar: "tuple[int, ...]" = (3, 5, 10, 21),
+            etiket: str = "akranmed", min_hacim: float = 0.0,
+            en_fazla: int = 24) -> dict:
+    """Ayni ozellikler, farkli ufuklar — ag egitmeden.
+
+    Tam bir kosu dort katman, bes tohum ve seksen model demek; ufku secmek
+    icin bunun hicbiri gerekmiyor. Bir ozelligin gun ici sirasi ile ileri
+    getirinin sirasi arasindaki iliski dogrudan olculebilir ve ufka gore
+    nasil degistigi, hangi ufkun denemeye deger oldugunu soyler.
+
+    Ilk kullanildiginda soyledigi sey bekledigimin tersiydi: tersine donus
+    sinyali her ufukta ayni gucte, ama likidite ekseni ufuk uzadikca
+    buyuyor (t=-3.7'den -10.8'e). Yani kisa ufuk sinyali guclendirmiyor,
+    KIRLILIGI zayiflatiyor -- ve kirlilik bu veride hayatta kalma
+    yanliligindan ayrilamiyor.
+
+    Tabloyu okurken: bu olcum katman ayrimi yapmaz, tum span'i okur. Veriyi
+    tarif eder, tahmin etmez.
+    """
+    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim)
+    if df is None or df.empty:
+        return {"ok": False, "reason": "panel yok"}
+    oz = [c for c in _ozellik_sutunlari(df)
+          if pd.api.types.is_numeric_dtype(df[c])]
+    if not oz:
+        return {"ok": False, "reason": "sayisal ozellik yok"}
+    X = df[oz].to_numpy(dtype=np.float32)
+    tarih = pd.DatetimeIndex(df["tarih"])
+
+    tablo: dict = {}
+    for u in ufuklar:
+        ad = f"{etiket}_{u}g"
+        if ad not in df.columns:
+            continue
+        y = pd.to_numeric(df[ad], errors="coerce")
+        m = y.notna().to_numpy()
+        if m.sum() < MIN_SATIR:
+            continue
+        tablo[u] = {r["ozellik"]: r for r in
+                    ozellik_ic(X[m], oz, y[m].to_numpy(), tarih[m],
+                               ufuk_gun=1)}
+        gc.collect()
+    if not tablo:
+        return {"ok": False, "reason": "hicbir ufuk olculemedi"}
+
+    # En uzun ufukta en guclu olanlar basta; karsilastirma o siraya gore
+    # okunuyor.
+    son = tablo[max(tablo)]
+    sirali = sorted(son, key=lambda c: -abs(son[c]["t_nw"] or 0))[:en_fazla]
+    return {
+        "ok": True, "kaynak": kaynak, "etiket": etiket,
+        "satir": int(len(df)), "ufuklar": sorted(tablo),
+        "ozellikler": [
+            {"ozellik": c,
+             "ufuk": {u: {"ic": tablo[u][c]["ic"], "t_nw": tablo[u][c]["t_nw"]}
+                      for u in sorted(tablo) if c in tablo[u]}}
+            for c in sirali],
+        "guclu_sayi": {u: sum(1 for v in tablo[u].values()
+                              if abs(v["t_nw"] or 0) >= 3)
+                       for u in sorted(tablo)},
+    }
+
+
 def _dogrulama_bol(tarih, pay: float = 0.15):
     """Split training rows by time: the last slice is held out.
 
