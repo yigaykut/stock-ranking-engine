@@ -1336,6 +1336,73 @@ dakika yerine bir dakika.
 
 ---
 
+## Hayatta kalma yanlılığı — ölçüldü (10.09.2026)
+
+Bu araştırmadaki her pozitif sonuç aynı yere çıktı: kenar en ince
+isimlerde. Kesitsel modelde dolar hacmi ve amihud çıkarılınca dilimler
+tersine döndü. İki açıklama vardı ve içeriden aynı görünüyorlardı — likidite
+primi, ya da önbelleğin yalnızca bugün kote olan şirketleri tutması.
+
+Artık kimin öldüğünü bilen bir kaynak var.
+
+### Önce: düzeltilemiyor
+
+Yahoo kote dışı sembollere **404** dönüyor (TWTR, ATVI, CERN, XLNX, ZNGA,
+SIVB, FRC denendi). Daha kötüsü, bazılarına 200 dönüyor ama bunlar **yeniden
+kullanılmış semboller**: SBNY 2024-08'de, BBBY 2026-07'de başlıyor, ikisi de
+bambaşka şirket. Körlemesine çekmek yanlılığı düzeltmek değil, ölmüş bir
+şirketin yerine yenisinin fiyatlarını koymak olurdu.
+
+### Ölçüm
+
+Kohort: 2016 sonunda XBRL ile bilanço raporlayan her şirket (`Assets
+CY2016Q4I`, tek istekte 6.591 şirket). Hayatta kalan: 2025 sonunda hâlâ
+raporlayan. Büyüklük ölçüsü gelir değil **toplam varlık** — geliri olmayan
+biyoteknoloji gelir çerçevesinde hiç görünmüyor ve mikro-kap bandı tam
+orası.
+
+| Kova | N | Ortanca varlık | Hâlâ raporluyor | Fiyat önbelleğinde |
+|---:|---:|---:|---:|---:|
+| 0 | 660 | 0 M$ | **23%** | **1%** |
+| 1 | 659 | 1 M$ | 32% | 2% |
+| 2 | 659 | 14 M$ | 47% | 7% |
+| 3 | 659 | 61 M$ | 48% | 14% |
+| 4 | 659 | 202 M$ | 44% | 20% |
+| 5 | 659 | 517 M$ | 51% | 32% |
+| 6 | 659 | 1.14 Mr$ | 57% | 39% |
+| 7 | 659 | 2.32 Mr$ | 55% | 38% |
+| 8 | 659 | 5.58 Mr$ | 65% | 36% |
+| 9 | 659 | 24.14 Mr$ | **78%** | 22% |
+
+Kohortun tamamında on yılda **%50** raporlamayı bırakmış; bugün fiyat
+önbelleğinde olan yalnızca **%21**.
+
+### Ne anlama geliyor
+
+Model yalnızca son sütunu görüyor. En küçük kovada o sütun **%1**. Yani o
+banttaki "kenar", tanım gereği hayatta kalanların kendisidir: en ince beşte
+birde ölçülen +%1.59'un karşısında, o bandın dörtte üçünün kaybolmuş olması
+duruyor.
+
+Bu, likidite ekseninin neden çıkarıldığında dilimleri tersine çevirdiğini de
+açıklıyor — model likidite primi bulmuyordu, hayatta kalmayı buluyordu.
+
+### Dürüstlük notu: yanlılık tek yönlü değil
+
+"Raporlamayı bırakmak" ölmek demek değil. Satın alınmak da bir çıkış ve
+genellikle **primli**. Yani önbellek hem batanları hem satın alınanları
+siliyor; ikisi ters yönlerde. Mikro-kap bandında batmaların baskın olması
+beklenir ama bu ölçüm onu ayırmıyor. `cikis_nedeni()` son bildirimlerdeki
+2.01 (devralma tamamlandı) ve 3.01 (kotasyon uyumsuzluğu) maddelerine bakıp
+ayırmayı deniyor; ancak yalnızca bir zamanlar evrende olup sonradan düşen
+semboller için cevap verebiliyor, hiç girmemişler için bildirim indirmek
+gerekiyor.
+
+Ayrıca kohort XBRL raporlayanlarla sınırlı: 2016'da XBRL'e hiç girmemiş çok
+küçük şirketler ve yabancı ihraççılar dışarıda.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
@@ -1359,6 +1426,11 @@ dakika yerine bir dakika.
 - **Akran-göreli etiket cebe girmez.** `akranmed_{N}g` "grubunun medyanını ne
   kadar geçti" ölçer; uzun-only bir portföy ham getiri kazanır. Cebe giren
   yakın karşılık üst−alt farkıdır.
+- **Hayatta kalma yanlılığı artık sayıyla belli**: 2016 kohortunun en küçük
+  onda birinde bugün hâlâ raporlayan %23, fiyat önbelleğinde olan %1. En
+  büyük onda birinde %78. Giderilemiyor (Yahoo kote dışı sembollere 404
+  dönüyor, 200 dönenler yeniden kullanılmış semboller), ama artık büyüklüğü
+  tahmin değil ölçüm.
 - **Hayatta kalma yanlılığı ölçüldü ama giderilemedi**: kote dışı kalmış
   hisselerin barları elde yok. Mikro-kap bandındaki fazla getirinin ne
   kadarının bundan geldiği bilinmiyor; yalnızca yönü ve büyüklüğü belli.

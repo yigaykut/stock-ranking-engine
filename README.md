@@ -1033,6 +1033,47 @@ The filing columns are joined onto the panel rather than computed inside the
 build, because they depend only on (ticker, date) --- a minute instead of the
 forty it takes to recompute ninety-three indicators for 2,600 stocks.
 
+### Putting a number on the survivorship problem
+
+Every positive result in this investigation ended in the same place: the
+edge lived in the thinnest names, and taking dollar volume and amihud away
+inverted the deciles. Two explanations fit that and look identical from
+inside the data --- a liquidity premium, or a price cache that only holds
+companies still listed today.
+
+It cannot be fixed. Yahoo returns 404 for delisted tickers (TWTR, ATVI,
+CERN, XLNX, ZNGA, SIVB, FRC all tested). Worse, a few return 200 and should
+not be used: SBNY starts in 2024-08 and BBBY in 2026-07, both different
+companies on a reused ticker. Fetching those would not repair the bias, it
+would put one company's prices under another's name.
+
+It can be measured. Every company that filed a balance sheet in XBRL at the
+end of 2016 is one request (`Assets CY2016Q4I`, 6,591 companies); the ones
+still reporting at the end of 2025 are another. Size is total assets rather
+than revenue, because pre-revenue biotech never appears in a revenue frame
+and that is exactly the microcap band in question.
+
+| Decile | Median assets | Still reporting | In the price cache |
+|---:|---:|---:|---:|
+| smallest | $0M | **23%** | **1%** |
+| 3rd | $14M | 47% | 7% |
+| 5th | $202M | 44% | 20% |
+| 7th | $1.14B | 57% | 39% |
+| largest | $24.1B | **78%** | 22% |
+
+Half the 2016 cohort stopped reporting within ten years, and only 21% of it
+is in the cache today. The model sees the last column only, and in the
+smallest decile that column is 1%. So the +1.59% measured in the thinnest
+quintile sits against three quarters of that band having disappeared: the
+model was not finding a liquidity premium, it was finding survival.
+
+The bias does not run one way, and the writeup says so. Ceasing to report is
+not the same as dying --- being acquired is also an exit and usually at a
+premium --- so the cache deletes winners along with losers. Failures should
+dominate in the microcap band but this measurement does not separate them,
+and the cohort is limited to XBRL filers, which leaves out the very smallest
+2016 companies and foreign issuers.
+
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
 ---

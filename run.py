@@ -2584,6 +2584,36 @@ def cmd_olay(args: argparse.Namespace) -> int:
     print(f"SIRKET OLAYLARI — SEC 8-K, {args.baslangic} sonrasi")
     print("=" * 78)
 
+    if args.olay_action == "kohort":
+        from src import hayatta_kalma as hk
+
+        r = hk.kohort(period=args.period)
+        if not r.get("ok"):
+            print(f"HATA: {r.get('reason')}", file=sys.stderr)
+            return 1
+        print(f"  {r['kohort']:,} sirket {r['baslangic']} sonunda bilanco "
+              f"raporladi")
+        print(f"  {r['bitis']} sonunda hala raporlayan: "
+              f"%{100 * r['yasayan_oran']:.0f}")
+        print(f"  bugun fiyat onbelleginde olan:        "
+              f"%{100 * r['onbellek_oran']:.0f}")
+        print()
+        print(f"  {'KOVA':>5}{'N':>7}{'ORTANCA VARLIK':>17}"
+              f"{'YASIYOR':>10}{'ONBELLEKTE':>13}")
+        print("  " + "-" * 50)
+        for x in r["kovalar"]:
+            v = x["ortanca_varlik"]
+            b = f"{v / 1e9:.2f} Mr$" if v >= 1e9 else f"{v / 1e6:.0f} M$"
+            print(f"  {x['kova']:>5}{x['n']:>7,}{b:>17}"
+                  f"{100 * x['yasayan']:>9.0f}%{100 * x['onbellekte']:>12.0f}%")
+        print()
+        print("  Model yalnizca son sutunu goruyor. En kucuk kovada o sutun")
+        print("  neredeyse bos: o banttaki 'kenar', hayatta kalanlarin")
+        print("  kendisidir.")
+        print("  Raporlamayi birakmak olmek demek degil -- satin alinmak da")
+        print("  bir cikis ve genellikle primli. Yanlilik tek yonlu degil.")
+        return 0
+
     if args.olay_action == "ekle":
         from src import kalibrasyon as kb
 
@@ -3153,10 +3183,11 @@ def main() -> int:
     op = sub.add_parser("olay", aliases=["events"],
                         help="sirkete ozel olaylar (SEC 8-K bildirimleri)")
     op.add_argument("olay_action", nargs="?", default="kapsam",
-                    choices=["kapsam", "cek", "ekle", "etki"],
+                    choices=["kapsam", "cek", "ekle", "etki", "kohort"],
                     help="kapsam: onbellekte ne var - cek: indir - "
                          "ekle: olay sutunlarini panele ekle - "
-                         "etki: olay cevresinde ne oluyor (panelden)")
+                         "etki: olay cevresinde ne oluyor (panelden) - "
+                         "kohort: buyukluge gore on yillik hayatta kalma")
     op.add_argument("--period", default="10y",
                     help="ekle: bar onbellegi anahtari (pencereler tam "
                          "gunluk seri uzerinde hesaplanir)")
