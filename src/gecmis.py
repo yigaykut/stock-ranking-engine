@@ -13,11 +13,17 @@ bundle'dan yalnizca "history" okuyor.
 
 NEDEN yfinance DEGIL
 
-06.09.2026 itibariyle yfinance 1.0'in butun fiyat yollari -- yf.download da,
-Ticker.history de -- "'NoneType' object is not subscriptable" ile dusuyor.
-Kutuphanenin cerez/crumb adimi None donuyor. Ayni anda Yahoo'nun chart ucu
-duz bir HTTP istegiyle sorunsuz cevap veriyor, yani engellenmis degiliz;
-arizali olan aradaki kutuphane.
+Bu modul yazildiginda (06.09.2026) yfinance 1.0'in butun fiyat yollari --
+yf.download da, Ticker.history de -- "'NoneType' object is not subscriptable"
+ile dusuyordu; kutuphanenin cerez/crumb adimi None donuyordu. Yahoo'nun chart
+ucu ayni anda duz bir HTTP istegine cevap veriyordu, yani engellenmis
+degildik; arizali olan aradaki kutuphaneydi.
+
+10.09.2026'da kutuphane 1.7.0'a yukseltildi ve fiyat yollari yeniden
+calisiyor. Bu modul yine de duruyor ve toplu gecmis icin tercih edilen yol:
+sembol basina tek istek, kendi hiz siniri, kendi bolunme duzeltmesi ve
+aradaki katman kadar az hareketli parca. On yillik onbellegin tamami bununla
+kuruldu; ayrica ayni ariza bir daha oldugunda beklemeye gerek kalmiyor.
 
 Bu modul o yuzden ucu dogrudan konusuyor. Sembol basina tek istek, aralarda
 bekleme, ve sonuc mevcut onbellek anahtarina yaziliyor ki panel hicbir sey

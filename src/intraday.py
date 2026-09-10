@@ -5,10 +5,12 @@ NEDEN AYRI BIR MODUL
 Gunluk barlar `providers/yahoo.py` uzerinden geliyor ve orasi `Ticker.history`
 kullaniyor. Gun ici icin iki sey farkli:
 
-  1. `Ticker.history` bu ortamda BOZUK (yfinance 1.0): her cagride
-     `TypeError: 'NoneType' object is not subscriptable` firlatiyor.
-     `yf.download` ayni veriyi doner ve calisir. Gun ici yolu bu yuzden
-     ayri.
+  1. Tarihsel bir sebep: yfinance 1.0'da `Ticker.history` her cagride
+     `TypeError: 'NoneType' object is not subscriptable` firlatiyordu ve
+     `yf.download` calisiyordu, o yuzden gun ici yolu download uzerine
+     kuruldu. Kutuphane 1.7.0'da duzeldi (10.09.2026), ama bu yol calisiyor
+     ve degistirmek icin bir sebep yok -- download toplu cekimde zaten daha
+     az istek uretiyor.
   2. Gun ici gecmis, aralik basina FARKLI uzunlukta veriliyor ve bu sinir
      saglayicinin kararidir, bizim degil.
 

@@ -1,6 +1,6 @@
 pandas>=2.0
 numpy>=1.24
-yfinance>=0.2.40
+yfinance>=1.5.0
 requests>=2.31
 PyYAML>=6.0
 lxml>=4.9          # Wikipedia tablolarini okumak icin (pd.read_html)
