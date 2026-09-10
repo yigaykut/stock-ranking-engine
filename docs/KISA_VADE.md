@@ -1403,6 +1403,75 @@ küçük şirketler ve yabancı ihraççılar dışarıda.
 
 ---
 
+## Ufuk kısaltmak: hipotez ve sonucu (10.09.2026)
+
+Likidite ekseni çıkarıldığında 21 günde dilimler tersine dönüyordu. Geriye
+kalan tek dürüst sinyal 5 günlük tersine dönüştü (`x_roc5`, t=−3.16) ve
+tersine dönüş kısa ufuklu bir etkidir — yani belki 21 gün yanlış ufuktu.
+
+### Önce ucuz kontrol
+
+Ufuk seçmek için seksen model eğitmeye gerek yok. `meta --sadece-ic` her
+özelliğin gün içi sıra korelasyonunu ufuk ufuk basıyor; yirmi saniye, 0.17 GB.
+
+| Özellik | u=3 | u=5 | u=10 | u=21 |
+|---|---:|---:|---:|---:|
+| `x_roc5` (tersine dönüş) | −3.0 | −3.2 | −3.5 | −3.5 |
+| `x_bb_pct` | −2.9 | −3.3 | −3.4 | −3.2 |
+| `x_ma20_uzaklik` | −2.8 | −3.4 | −3.3 | −2.9 |
+| `x_amihud` (likidite) | +4.0 | +4.5 | +5.9 | **+8.3** |
+| `x_dolar_hacim` | −3.7 | −6.3 | −7.9 | **−10.8** |
+
+|t|≥3 geçen sütun: u=3'te 4, **u=5'te 9**, u=10'da 9, u=21'de 5.
+
+Hipotez yanlıştı: tersine dönüş **her ufukta aynı güçte**, seyrelmiyor.
+Değişen tek şey kirlilik — likidite ekseni ufukla büyüyor. Bu, hayatta kalma
+yanlılığının olması gereken şekli: uzun pencere, ölüme daha çok zaman.
+
+Yani kısa ufuk sinyali güçlendirmiyor, onu boğan şeyi zayıflatıyor. 21 günde
+likidite tersine dönüşü 3'e 1 eziyor; 5 günde ikisi denk. Denemeye değer
+hâle gelen şey buydu.
+
+### Sonuç
+
+Ufuk 5, 400 gün, %10'luk üst dilim, 10bp:
+
+| Koşu | Üst dilim | t | Taban | Tabana göre | AUC | DV eğilimi |
+|---|---:|---:|---:|---:|---:|---:|
+| u=5, tam | +0.240% | +3.43 | +0.138% | +0.102% | 0.510 | 0.79 |
+| **u=5, likiditesiz** | **+0.106%** | **1.38** | +0.138% | **−0.032%** | 0.506 | **1.013** |
+| u=21, tam | +1.293% | +5.12 | +0.398% | +0.895% | 0.520 | 0.671 |
+| u=21, likiditesiz | +0.206% | 1.01 | +0.398% | −0.192% | 0.503 | 1.001 |
+
+u=5 likiditesiz dilimler:
+
+```
+0.18  0.10  0.12  0.15  0.11  0.10  0.11  0.18  0.13  0.21
+```
+
+**Düz.** 21 günde tersine dönüyordu, burada dönmüyor — bu kadarı iyileşme,
+çünkü model artık ters tahmin etmiyor. Ama kenar yok: üst dilim tabanın
+altında, üst−alt farkı −%0.148 (t=−1.17), bileşik +%0.135 (t=1.65).
+
+### Cevap
+
+**Likidite ekseni olmadan hiçbir ufukta kenar yok.** 21 günde ters, 5 günde
+düz. Kısa ufka geçmek kirliliği azalttı, altından bir şey çıkarmadı.
+
+Tersine dönüş ailesi (`roc5, bb_pct, rsi7, ma20_uzaklik, dip20, donchian20`)
+tek tek |t|≈3 veriyor ve altısı da aynı şeyi ölçüyor: "yakın zamanda düştü".
+Ama model bunu bir dilim farkına çeviremiyor — IC'ler 0.013-0.018
+mertebesinde ve bu, günlük bir sıralamada seçim yapmaya yetmiyor.
+
+### Maliyet notu
+
+u=5, u=21'e göre ~4 kat devir. Tablodaki 10bp her tutuş için düşülüyor, yani
+u=5'in yılda ~50, u=21'in ~12 kez ödemesi zaten hesapta. Yine de: u=5 tam
+koşusunun tabana göre +%0.102'si, u=21'in +%0.895'inin yıllığa çevrilmiş
+hâline yakın duruyor ve ikisi de aynı likidite eksenine yaslanıyor.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir

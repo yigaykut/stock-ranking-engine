@@ -1074,6 +1074,49 @@ dominate in the microcap band but this measurement does not separate them,
 and the cohort is limited to XBRL filers, which leaves out the very smallest
 2016 companies and foreign issuers.
 
+### Trying a shorter horizon
+
+Removing the liquidity axis inverted the deciles at 21 days. The one honest
+signal left was five-day reversal, and reversal is a short-horizon effect,
+so perhaps 21 days was simply the wrong window.
+
+Picking a horizon does not need eighty model fits. `meta --sadece-ic` reads
+the within-day rank correlation of every feature against each horizon's
+label in twenty seconds:
+
+| Feature | u=3 | u=5 | u=10 | u=21 |
+|---|---:|---:|---:|---:|
+| `x_roc5` (reversal) | −3.0 | −3.2 | −3.5 | −3.5 |
+| `x_amihud` (liquidity) | +4.0 | +4.5 | +5.9 | **+8.3** |
+| `x_dolar_hacim` | −3.7 | −6.3 | −7.9 | **−10.8** |
+
+The hypothesis was wrong. Reversal is the same strength at every horizon; it
+is not being diluted. What grows with the horizon is the contamination, which
+is the shape survivorship should have — a longer window gives the delisting
+more time to happen. So a shorter horizon does not strengthen the signal, it
+weakens what drowns it: at 21 days liquidity beats reversal three to one, at
+five days they are level, and nine columns clear |t| = 3 against five.
+
+That made the run worth doing. Horizon 5, 400 days, top decile net of 10bp:
+
+| Run | Top decile | t | Base | vs base | DV tilt |
+|---|---:|---:|---:|---:|---:|
+| u=5, full | +0.240% | +3.43 | +0.138% | +0.102% | 0.79 |
+| **u=5, no liquidity** | **+0.106%** | **1.38** | +0.138% | **−0.032%** | **1.013** |
+| u=21, full | +1.293% | +5.12 | +0.398% | +0.895% | 0.671 |
+| u=21, no liquidity | +0.206% | 1.01 | +0.398% | −0.192% | 1.001 |
+
+The deciles at u=5 without liquidity run 0.18, 0.10, 0.12, 0.15, 0.11, 0.10,
+0.11, 0.18, 0.13, 0.21 — flat. That is an improvement on 21 days, where they
+inverted, in the narrow sense that the model has stopped predicting
+backwards. It is not an edge: the top decile sits below the base rate and
+top-minus-bottom is −0.148% at t = −1.17.
+
+So: without the liquidity axis there is no edge at any horizon tested. The
+reversal family clears |t| ≈ 3 individually and all six of its members
+measure the same thing — "it recently fell" — but an IC of 0.013 to 0.018 is
+not enough to order a cross-section.
+
 More detail: **[docs/KISA_VADE.md](docs/KISA_VADE.md)** (Turkish)
 
 ---
