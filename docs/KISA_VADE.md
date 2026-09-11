@@ -1602,6 +1602,90 @@ yorumlanamaz.
 
 ---
 
+## Kripto kesiti — projenin ilk temiz sonucu (11.09.2026)
+
+Hisse tarafında her pozitif sonuç aynı duvara çarptı: kenar en ince
+isimlerde ve likidite ekseni çıkarılınca yok oluyor, çünkü o eksen hayatta
+kalma yanlılığından ayrılamıyor (2016 kohortunun en küçük onda birinde
+bugün önbellekte olan %1).
+
+Kriptoda o duvar yok.
+
+### Neden
+
+Binance kapanmış pariteleri siliyor değil, **saklıyor**. 742 USDT
+paritesinin 252'si artık işlem görmüyor ve geçmişleri eksiksiz geliyor:
+BCCUSDT'nin 371 günlük tüm ömrü, LUNA'nın çöküşü, FTT'nin FTX hafta sonu.
+Süzgeçten sonra **578 parite, 187'si ölü**, 781.885 bar, 2017-08'den.
+
+Ölçüm aygıtının tamamı olduğu gibi kullanıldı — göstergeler, kesit,
+arındırılmış walk-forward, gün bazında Newey-West, null kontrolü, özellik
+dışlama. Değişen tek şey evren.
+
+### Sonuç
+
+Ufuk 7 gün, ≥$1M günlük hacim, 576 parite, 396 gün, **20bp maliyet**
+(Binance taker gidiş-dönüş):
+
+| Konfigürasyon | Özellik | AUC | Üst dilim, tabana göre | t | Üst−alt |
+|---|---:|---:|---:|---:|---:|
+| Tam | 40 | **0.5592** | +0.629% | 11.82 | +2.415% (t=8.92) |
+| Likidite ekseni yok | 33 | 0.5553 | **+0.634%** | 11.70 | +1.951% (t=7.12) |
+| Likidite + oynaklık yok | 26 | 0.5509 | **+0.464%** | 10.34 | +1.801% (t=7.30) |
+| **Null (etiket karıştırıldı)** | 40 | **0.5054** | **−0.304%** | 5.68 | −0.282% (t=−1.7) |
+
+Dilimler (tam, 20bp): `−0.63 0.68 1.04 1.22 1.55 1.60 1.59 1.61 1.87 2.10`
+— monoton. Null'da düz: `1.06 1.31 1.25 1.20 1.25 1.44 1.32 1.43 1.25 1.16`.
+
+**Hissede likidite ekseni çıkarılınca dilimler tersine dönüyordu. Burada
+neredeyse hiç oynamıyor.** Bu, projede ilk kez likiditeden bağımsız bir
+sıralama.
+
+### Zamana dayanıklı
+
+| Katman | Test dönemi | Tam | Sade | Null |
+|---|---|---:|---:|---:|
+| 2 | 2019-06 → 2021-04 | 0.5535 | 0.5491 | 0.5008 |
+| 3 | 2021-04 → 2023-01 | **0.5675** | 0.5620 | 0.5097 |
+| 4 | 2023-02 → 2024-11 | 0.5610 | 0.5481 | 0.5002 |
+
+Üçüncü katmanın test penceresi 2022 çöküşünü kapsıyor ve orada en yüksek.
+Boğa piyasası artefaktı değil.
+
+### Sinyalin ne olduğu
+
+En güçlü eksen **oynaklık** ve işareti negatif: `x_en_iyi_gun21` IC −0.104
+(t=−13.1), `x_oynaklik60` −0.111 (t=−12.0), `x_atr14` −0.103 (t=−10.3).
+Yani yüksek oynaklıklı coinler daha kötü.
+
+Bu, hisse tarafındaki bulgunun **tam tersi** ve tersliğin sebebi tam olarak
+ölülerin içeride olması: hissede ince/oynak bant iyi görünüyordu çünkü
+batanlar silinmişti; burada batanlar duruyor ve aynı bant kötü çıkıyor.
+
+Ama sinyal bundan ibaret değil — oynaklık ve likidite eksenlerinin ikisi de
+çıkarıldığında AUC 0.5509 ve dilimler hâlâ monoton.
+
+### Ne DEĞİL
+
+Bu sayı **%10/ay değil**.
+
+- +%0.464 ile +%0.629 arası, **7 günde**, kesitin kendi ortalamasına göre.
+  Ayda ~%2-2.7 fazla.
+- 60bp maliyetle fazla +%0.229/7 gün ≈ ayda %0.9. Kriptoda ince
+  paritelerde kayma 60bp'yi kolayca geçer.
+- Tabanın kendisi +%1.266/7 gün: bu, medyandan arındırılmış bir dağılımın
+  sağa çarpıklığı, piyasa getirisi değil.
+- Uzun-only bir portföy piyasa düşerse yine kaybeder; bu sayı akran-göreli.
+
+Piyasadan bağımsız hâli **üst−alt** farkı: +%1.8-2.4 / 7 gün, t=7-9,
+günlerin %68'i pozitif. Aylığa çevrilince hedefin mertebesine giriyor —
+**ama denenmedi ve iki ciddi şüphe var**: dilimlere bakınca farkın büyük
+kısmını alt dilimin kötülüğü taşıyor (−0.63'e karşı +2.10), ve alt dilimi
+satmak en ince, en zor ödünç alınan pariteleri satmak demek. Fonlama
+oranları ve tasfiye riski de hesapta yok. Sıradaki iş bunu ölçmek.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
