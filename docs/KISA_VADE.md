@@ -1472,6 +1472,72 @@ hâline yakın duruyor ve ikisi de aynı likidite eksenine yaslanıyor.
 
 ---
 
+## Piyasanın yönü tahmin edilebiliyor mu (11.09.2026)
+
+Kesitsel modelin etiketi akran-göreli, yani piyasayı **tanım gereği** aradan
+çıkarıyor. "Sektöründen %2 iyi" ile "hesabın büyüdü" arasındaki fark tam
+olarak bu: sektör %12 düştüyse, akranını %2 geçen bir portföy %10 kaybeder.
+
+`regime.py` bugünün rejimini etiketliyor ama bilerek tahmin yapmıyor
+("piyasayı zamanlamak için değil, bağlam vermek için"). Bu ölçüm tahminin
+mümkün olup olmadığını soruyor.
+
+### Önce örneklem tavanı
+
+On yıl, 21 günlük örtüşmeyen dönem cinsinden **~118 gözlem**. Bu sayı bir
+daha artmaz — piyasa zamanlamasında örneklem takvimle sınırlı, evreni
+büyütmek işe yaramıyor. Kesitte iki bin hisse × beş yüz günle çalışmaya
+alışmış bir disiplin için bu çok az, ve burada |t|=2 civarı bir sonuç kanıt
+değildir.
+
+### Sonuç: hiçbir şey
+
+SPY'ın 21 gün sonrası, 2.492 gün, 14 özellik:
+
+| Özellik | rho | t | rho(düşüş) |
+|---|---:|---:|---:|
+| vix | +0.173 | +1.84 | +0.102 |
+| ma200_uzaklik | −0.169 | −1.68 | −0.141 |
+| tepe_uzaklik | −0.178 | −1.68 | −0.103 |
+| getiri63 | −0.136 | −1.63 | −0.088 |
+| genislik_ayrisma | +0.112 | +1.54 | +0.001 |
+| oynaklik20 | +0.160 | +1.45 | +0.134 |
+| **genislik** | −0.057 | **−0.74** | −0.144 |
+| genislik_degisim10 | −0.032 | +0.18 | −0.037 |
+
+Hiçbiri |t|=2'yi geçmiyor. En iyisi VIX, +1.84.
+
+İşaretler literatürle tutarlı — yüksek VIX sonrası daha iyi getiri
+(oynaklık risk primi), 200 günlük ortalamadan uzaklık negatif (ortalamaya
+dönüş) — ama 118 dönemle bunların hiçbiri ayırt edilemiyor.
+
+**Genişlik de eklemedi.** En ayırt edici özellik olacağını umuyordum: endeks
+birkaç dev hisseyle ayakta durabilir, hisselerin yüzde kaçı kendi
+ortalamasının üstünde sorusu duramaz. 2.598 hisseden on yıllık seri
+hesaplandı; getiriye karşı t=−0.74.
+
+Tek kayda değer ayrıntı: genişlik, **düşüş bayrağıyla** en güçlü ilişkiyi
+veren özellik (rho=−0.144, diğerlerinin hepsinden yüksek). Yani genişlik
+düşükken %5'ten fazla düşüş biraz daha olası. Ama rho 0.14 ve getiriye karşı
+t=−0.74; bir karar dayandırılmaz.
+
+### Bunun pratik anlamı
+
+"Piyasa düşerse yine kaybederim" sorunu **tahminle çözülmüyor.** Ölçüm bunu
+söylüyor ve bu, literatürün de söylediği şey.
+
+Çözülebileceği yer başka: tahmin etmek yerine **maruziyeti kaldırmak**.
+Model akran-göreli bir sıralama üretiyor; o sıralamanın karşılığını almanın
+yolu piyasa yönünü bilmek değil, portföyü piyasaya nötr kurmak — üst dilimi
+alıp alt dilimi satmak. O sayı zaten ölçülüyor (üst−alt), ve bu projede
+ölçüldüğünde yine likidite eksenine dayandığı çıktı: u=21 tam +%1.091
+(t=2.69), likidite çıkarılınca −%0.422 (t=−1.03).
+
+Yani iki ayrı duvar aynı yere çıkıyor: kesitte kalan tek şey likidite
+ekseni, ve o eksen hayatta kalma yanlılığından ayrılamıyor.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir

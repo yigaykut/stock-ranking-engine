@@ -2567,6 +2567,75 @@ def cmd_gecmis(args: argparse.Namespace) -> int:
     return 0
 
 
+def cmd_piyasa(args: argparse.Namespace) -> int:
+    """Piyasanin yonu tahmin edilebiliyor mu."""
+    from src import piyasa as pz
+    from src.providers import cache as _cache
+
+    print("=" * 78)
+    print(f"PIYASA YONU — endeksin {args.ufuk} gun sonrasi")
+    print("=" * 78)
+
+    hit = _cache.peek("yahoo_bench", f"{args.benchmark}:{args.period}")
+    spy = None
+    if hit and hit[0] is not None:
+        h = hit[0].get("history") if isinstance(hit[0], dict) else hit[0]
+        if h is not None and len(h):
+            spy = h["Close"].astype(float)
+            idx = pd.DatetimeIndex(spy.index)
+            try:
+                idx = (idx.tz_localize(None) if idx.tz is None
+                       else idx.tz_convert(None))
+            except (TypeError, AttributeError):
+                pass
+            spy.index = idx.normalize()
+    if spy is None or len(spy) < 300:
+        print(f"HATA: {args.benchmark} barlari yok. Once: python run.py "
+              f"gecmis cek --period {args.period} --benchmark",
+              file=sys.stderr)
+        return 1
+
+    vix = None
+    try:
+        vix = pz._seri("^VIX", period=args.period)
+    except Exception as exc:
+        print(f"  UYARI: VIX alinamadi ({exc})", file=sys.stderr)
+
+    gen = None
+    if not args.genisliksiz:
+        bundles = _kisa_bundles(argparse.Namespace(
+            frekans="1d", period=args.period, cache_days=10_000,
+            limit=args.limit), tembel=True)
+        print(f"  genislik {len(bundles):,} hisseden hesaplaniyor...",
+              flush=True)
+        gen = pz.genislik(bundles, period=args.period)
+        print(f"  genislik: {len(gen):,} gun", flush=True)
+
+    oz = pz.ozellikler(spy, vix, gen)
+    r = pz.onculuk(spy, oz, ufuk=args.ufuk)
+    if not r.get("ok"):
+        print(f"HATA: {r.get('reason')}", file=sys.stderr)
+        return 1
+
+    print(f"  {r['gun']:,} gun · ~{r['bagimsiz_donem']} BAGIMSIZ donem")
+    print(f"  bu donemlerin %{100 * r['dusus_orani']:.0f}'inde endeks "
+          f"{args.ufuk} gunde %5'ten fazla dustu")
+    print()
+    print(f"  {'OZELLIK':<24}{'RHO':>9}{'t':>8}{'RHO(dusus)':>13}")
+    print("  " + "-" * 54)
+    for x in r["ozellikler"]:
+        t = f"{x['t_nw']:+.2f}" if x["t_nw"] is not None else "-"
+        print(f"  {x['ozellik']:<24}{x['rho']:>9.4f}{t:>8}"
+              f"{x['rho_dusus']:>13.4f}")
+    print()
+    print(f"  ORNEKLEM: on yil, {args.ufuk} gunluk ortusmeyen donem cinsinden")
+    print(f"  yaklasik {r['bagimsiz_donem']} gozlem. Bu sayi bir daha artmaz;")
+    print("  piyasa zamanlamasinda orneklem takvimle sinirlidir. Burada")
+    print("  |t|=2 civari bir sonuc kanit degildir.")
+    print("  RHO(dusus): ozellik ile '%5'ten fazla dustu' arasindaki iliski.")
+    return 0
+
+
 def cmd_olay(args: argparse.Namespace) -> int:
     """Sirkete ozel olaylar: SEC 8-K bildirimleri."""
     from src import olay as ol
@@ -3228,6 +3297,18 @@ def main() -> int:
     gp.add_argument("--yenile", action="store_true",
                     help="onbellekte olani da yeniden indir")
 
+    pz_p = sub.add_parser("piyasa", aliases=["market"],
+                          help="piyasanin yonu tahmin edilebiliyor mu "
+                               "(kesitsel model bunu tanim geregi gormez)")
+    pz_p.add_argument("--ufuk", type=int, default=21,
+                      help="kac gun sonrasi")
+    pz_p.add_argument("--period", default="10y")
+    pz_p.add_argument("--benchmark", default="SPY")
+    pz_p.add_argument("--limit", type=int, default=None)
+    pz_p.add_argument("--genisliksiz", action="store_true",
+                      help="genislik hesaplama (hizli ama en ayirt edici "
+                           "ozellik dusar)")
+
     op = sub.add_parser("olay", aliases=["events"],
                         help="sirkete ozel olaylar (SEC 8-K bildirimleri)")
     op.add_argument("olay_action", nargs="?", default="kapsam",
@@ -3361,6 +3442,8 @@ def main() -> int:
         return cmd_learn(args)
     if args.cmd == "meta":
         return cmd_meta(args)
+    if args.cmd in ("piyasa", "market"):
+        return cmd_piyasa(args)
     if args.cmd in ("olay", "events"):
         return cmd_olay(args)
     if args.cmd in ("gecmis", "bargecmis"):
