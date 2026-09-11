@@ -239,6 +239,49 @@ check("ust dilimin t degeri ezilmedi", d_ince["t_nw"] > 2,
 
 print()
 print("=" * 72)
+print("5b) GERCEK PORTFOY: AL-SAT, DONEM DONEM")
+print("=" * 72)
+
+# Dilim ortalamasi "bu kurali isletsem ne olurdu" sorusunu cevaplamiyor. Bir
+# ay tek atis ve ortalama onu anlatmaz; en kotu donem ve maksimum dusus de
+# raporlanmali.
+hacim = np.exp(rng2.normal(15, 1.5, n))
+pf = mm.portfoy(tahmin, getiri, gun, n=3, maliyet_bp=10.0,
+                nitelik={"dolar_hacim": hacim}, ufuk_gun=1)
+check("portfoy uretildi", pf.get("ok"), str(pf.get("reason")))
+check("uc bacak da var",
+      {"uzun", "kisa", "uzun_kisa"} <= set(pf), str(sorted(pf)))
+check("ekilmis kenarda uzun bacak kazaniyor", pf["uzun"]["ortalama"] > 0,
+      f"%{100 * pf['uzun']['ortalama']:.2f}")
+check("uzun-kisa uzundan guclu",
+      pf["uzun_kisa"]["ortalama"] > pf["uzun"]["ortalama"],
+      f"%{100 * pf['uzun_kisa']['ortalama']:.2f} vs "
+      f"%{100 * pf['uzun']['ortalama']:.2f}")
+check("en kotu donem raporlaniyor ve negatif",
+      pf["uzun_kisa"]["en_kotu"] < 0, f"%{100 * pf['uzun_kisa']['en_kotu']:.2f}")
+check("maksimum dusus raporlaniyor",
+      pf["uzun_kisa"]["max_dusus"] <= 0.0,
+      f"%{100 * pf['uzun_kisa']['max_dusus']:.1f}")
+check("maliyet iki bacaktan da dusuluyor",
+      abs((pf["uzun"]["ortalama"] + pf["kisa"]["ortalama"])
+          - pf["uzun_kisa"]["ortalama"]) < 1e-9,
+      "uzun + kisa = uzun-kisa olmali, maliyetler dahil")
+
+# Short edilebilirlik: her bacagin ortanca hacmi ayri veriliyor, cunku
+# borsanin en ince isimlerini satmak kagit uzerinde bedava.
+check("bacak bazinda hacim raporlaniyor",
+      "dolar_hacim" in (pf.get("bacak_nitelik") or {}),
+      str(list((pf.get("bacak_nitelik") or {}))))
+
+# Tahmin gurultuyse hicbir bacak kazanmamali.
+pf_bos = mm.portfoy(rng2.normal(0.5, 0.1, n), getiri, gun, n=3,
+                    maliyet_bp=0.0, ufuk_gun=1)
+check("gurultuyle uzun-kisa anlamsiz",
+      abs(pf_bos["uzun_kisa"]["t_nw"] or 0) < 2.5,
+      str(pf_bos["uzun_kisa"]["t_nw"]))
+
+print()
+print("=" * 72)
 print("6) OVERLAP IS ACCOUNTED FOR")
 print("=" * 72)
 

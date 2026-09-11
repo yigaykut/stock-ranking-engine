@@ -806,6 +806,79 @@ def ufuk_ic(frekans: str = "1d", kaynak: str = "capraz",
     }
 
 
+def portfoy(p: np.ndarray, getiri: np.ndarray, tarih, n: int = 10,
+            maliyet_bp: float = 20.0, nitelik: "dict | None" = None,
+            ufuk_gun: int = 1) -> dict:
+    """Gercek bir portfoy: her donem en iyi N al, en kotu N sat.
+
+    `dilim_getirisi` dilim ortalamalari veriyor; burada sorulan sey baska ve
+    daha somut: bu kurali isletsem donem donem ne olurdu. Ortalamanin yaninda
+    EN KOTU DONEM ve MAKSIMUM DUSUS de veriliyor, cunku bir ay tek atistir ve
+    ortalama onu anlatmaz.
+
+    Short bacagi ayri raporlaniyor ve iki sebeple: getirinin ne kadari oradan
+    geliyor, ve o bacaktaki isimler gercekten satilabilir mi. Ikincisi icin
+    bacagin ortanca dolar hacmi veriliyor -- borsanin en ince paritelerini
+    short etmek kagit uzerinde bedava, gercekte degil.
+
+    Maliyet: uzun bacak bir gidis-donus, kisa bacak bir gidis-donus daha.
+    """
+    from .faktor_zaman import newey_west_t
+
+    gun = pd.DatetimeIndex(tarih)
+    kod, benzersiz = pd.factorize(gun)
+    sira = pd.Series(-p).groupby(kod).rank(method="first").to_numpy()
+    ters = pd.Series(p).groupby(kod).rank(method="first").to_numpy()
+    uzun, kisa = sira <= n, ters <= n
+    if uzun.sum() < 20 or kisa.sum() < 20:
+        return {"ok": False, "reason": "bacaklar cok kucuk"}
+
+    def bacak(maske):
+        return (pd.DataFrame({"g": gun[maske], "r": getiri[maske]})
+                .groupby("g")["r"].mean())
+
+    u_g, k_g = bacak(uzun), bacak(kisa)
+    ortak = u_g.index.intersection(k_g.index)
+    if len(ortak) < 20:
+        return {"ok": False, "reason": f"{len(ortak)} donem"}
+    u_g, k_g = u_g.reindex(ortak), k_g.reindex(ortak)
+    m = maliyet_bp / 10000.0
+
+    def ozet(seri, ad):
+        v = seri.to_numpy()
+        tv, _, _ = newey_west_t(v, lag=_ortusme(seri.index, ufuk_gun))
+        # Bilesik egri: donemler ortusuyor olabilir ama en kotu donem ve
+        # ardisik kayip serisi yine de okunabilir seyler.
+        egri = np.cumprod(1.0 + v)
+        dusus = egri / np.maximum.accumulate(egri) - 1.0
+        return {"ad": ad, "donem": int(len(v)),
+                "ortalama": round(float(v.mean()), 5),
+                "ortanca": round(float(np.median(v)), 5),
+                "pozitif": round(float((v > 0).mean()), 3),
+                "en_kotu": round(float(v.min()), 5),
+                "en_iyi": round(float(v.max()), 5),
+                "max_dusus": round(float(dusus.min()), 4),
+                "t_nw": None if not np.isfinite(tv) else round(float(tv), 2)}
+
+    out = {
+        "ok": True, "n": n, "maliyet_bp": maliyet_bp,
+        "uzun": ozet(u_g - m, "uzun"),
+        "kisa": ozet(-k_g - m, "kisa (ters isaretli)"),
+        "uzun_kisa": ozet((u_g - k_g) - 2 * m, "uzun-kisa"),
+    }
+    # Her bacagin ortanca dolar hacmi: short edilebilirligin en kaba ama en
+    # dogrudan gostergesi.
+    for ad, v in (nitelik or {}).items():
+        if not np.isfinite(v).any():
+            continue
+        out.setdefault("bacak_nitelik", {})[ad] = {
+            "uzun": round(float(np.nanmedian(v[uzun])), 2),
+            "kisa": round(float(np.nanmedian(v[kisa])), 2),
+            "tum": round(float(np.nanmedian(v)), 2),
+        }
+    return out
+
+
 def _dogrulama_bol(tarih, pay: float = 0.15):
     """Split training rows by time: the last slice is held out.
 
@@ -1210,6 +1283,13 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                                            gun_bazinda=gunluk_dilim,
                                            nitelik=N)
              for c in maliyetler}
+    # Gercek portfoy: al-sat kurali, donem donem.
+    portfoyler = {}
+    for n_slot in (5, 10, 20):
+        pr = portfoy(P, R, T, n=n_slot, maliyet_bp=float(min(maliyetler) or 20),
+                     nitelik=N, ufuk_gun=ufuk_gun)
+        if pr.get("ok"):
+            portfoyler[f"ilk{n_slot}"] = pr
     C = np.concatenate(tum_c) if tum_c else np.full(len(Y), np.nan)
     bilesik_dilim = None
     if np.isfinite(C).any():
@@ -1240,6 +1320,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
         "t_nw": None if not np.isfinite(t) else round(t, 2),
         "brier_daha_iyi": bool(np.isfinite(t) and t >= 2.0),
         "dilim": dilim,
+        "portfoy": portfoyler,
         # What a flat average of the surviving features gets, on the same
         # folds. The net has to beat this to have earned its layers.
         "bilesik": bilesik_dilim,
