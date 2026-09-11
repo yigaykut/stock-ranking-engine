@@ -2606,6 +2606,23 @@ def cmd_kripto(args: argparse.Namespace) -> int:
     print(f"KRIPTO EVRENI — {args.baslangic} sonrasi")
     print("=" * 78)
 
+    if args.kripto_action == "ekle":
+        from src import kalibrasyon as kb
+        from src import kripto_olay as ko
+
+        for kaynak, hedef in (("capraz", kb.capraz_yolu("1d", "kripto")),
+                              ("sinyal", kb.panel_yolu("1d", "kripto"))):
+            if not hedef.exists():
+                print(f"  {kaynak}: {hedef.name} yok, atlandi")
+                continue
+            r = ko.panele_ekle(hedef, baslangic=args.baslangic)
+            if not r.get("ok"):
+                print(f"  {kaynak}: HATA {r.get('reason')}", file=sys.stderr)
+                continue
+            print(f"  {kaynak}: {r['satir']:,} satir · {r['parite']:,} parite "
+                  f"· {len(r['sutun'])} sutun eklendi")
+        return 0
+
     if args.kripto_action == "kapsam":
         k = kr.kapsam(baslangic=args.baslangic)
         if not k.get("ok"):
@@ -3400,8 +3417,9 @@ def main() -> int:
                         help="Binance gunluk barlari — kapanmis pariteler "
                              "dahil (hayatta kalma yanliligi yok)")
     kp.add_argument("kripto_action", nargs="?", default="kapsam",
-                    choices=["kapsam", "cek"],
-                    help="kapsam: onbellekte ne var - cek: indir")
+                    choices=["kapsam", "cek", "ekle"],
+                    help="kapsam: onbellekte ne var - cek: indir - "
+                         "ekle: listelenme yasi sutunlarini panellere ekle")
     kp.add_argument("--baslangic", default="2017-08-01",
                     help="bu tarihten sonraki barlar. Onbellek anahtari "
                          "budur; panel ayni deger ile okur.")
