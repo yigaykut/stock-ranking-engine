@@ -1686,6 +1686,78 @@ oranları ve tasfiye riski de hesapta yok. Sıradaki iş bunu ölçmek.
 
 ---
 
+## Kriptoda formasyonlar ve "haber" (11.09.2026)
+
+Kesit sonucundan sonra iki soru kaldı: 12 formasyon kriptoda ne ifade
+ediyor, ve 8-K'nın karşılığı ne.
+
+### Formasyonlar çalışıyor — ama bazıları ters
+
+Kurulum satırları, ufuk 7, ≥$1M, 20bp:
+
+| | Satır | AUC | Üst dilim (tabana göre) | İlk-10 | Dilimler |
+|---|---:|---:|---:|---:|---|
+| Kesit (tüm evren) | 99.050 | **0.5592** | **+0.629%** (t=11.8) | +0.668% (t=3.93) | −0.63 → +2.10 |
+| Kurulum satırları | 99.611 | 0.5380 | +0.552% (t=7.6) | +0.471% (t=3.68) | 0.85 → 3.10 |
+| Kurulum NULL | 99.611 | 0.4934 | −0.508% | −0.239% (t=−3.54) | düz |
+
+Formasyonlar kriptoda gerçekten bilgi taşıyor ve null temiz — ama **kesit
+daha iyi**. Yani "önce formasyon ara, sonra içinden seç" yaklaşımı, doğrudan
+bütün evreni sıralamaktan zayıf. Hisse tarafındaki bulgunun aynısı, ama
+orada kurulum havuzunun tabanı negatifti; burada değil.
+
+Asıl ilginç olan işaretler. Kurulum kuklalarının gün içi sıra korelasyonu:
+
+```
+kuru_hacimli_kirilim      IC -0.0406   t -6.23
+kuru_bollinger_sikismasi  IC +0.0220   t +3.68
+kuru_boga_yutan           IC -0.0209   t -3.67
+kuru_dagitim_gunu         IC -0.0202   t -3.17
+kuru_yutan_ayi            IC +0.0158   t +2.23
+```
+
+**Hacimli kırılım ve boğa yutan formasyonu kriptoda KÖTÜ**; sıkışma ve ayı
+yutan iyi. Yani dedektörlerin tasarım amacı ile kriptodaki anlamı birkaç
+yerde ters. Model ağırlığı kendi öğreniyor, ama "formasyon doğru görünüyor"
+sezgisi burada yanıltıyor ve bunu bilerek okumak gerekiyor.
+
+### "Haber": 8-K'nın karşılığı yok, listelenme günü var
+
+Kriptoda şirket bildirimi diye bir şey yok. En yakını borsanın kendi
+duyuruları ve Binance arşivi gerçekten 2017-07'ye kadar gidiyor (2.253
+listeleme, 431 delisting kaydı) — ama uç birkaç istekten sonra boş gövdeyle
+400 dönmeye başladı. Düzenli bir besleme olarak güvenilmez.
+
+Aynı kesinlikte bir olay elimizde zaten var: **paritenin borsaya girdiği
+gün**. Barların ilki tam olarak o.
+
+```
+kripto_yas     IC +0.0227   t +3.21
+kripto_yeni90  IC -0.0169   t -1.10
+```
+
+Yeni listelenen coinler daha kötü, eskiler daha iyi. Hisse tarafında 8-K
+sütunlarının **hiçbiri** |t|≥3 geçememişti; bu geçiyor.
+
+Yaş log ölçekli: 10. gün ile 40. gün arasındaki fark, 800. ile 830. gün
+arasındakinden çok daha anlamlı ve ham sayı bütün eski pariteleri tek uca
+yığar.
+
+### Kullanılmayan sütun
+
+Ölü paritelerin **tüm ömrü** elimizde, yani "kaç gün sonra kapanacak"
+hesaplanabilir. Muhteşem bir tahminci olurdu ve tamamen ileriye bakış
+olurdu. O sütun yok, ve `tests/test_kripto_olay.py` o şekilde bir sütun
+eklenirse düşüyor.
+
+### Sıradaki
+
+Kurulum bayrakları kesit paneline eklenmedi. "Formasyon, kesitsel sıralamaya
+bir şey KATIYOR mu" sorusu ayrı ve henüz ölçülmedi; iki panelin ayrı ayrı
+ölçümü o soruyu cevaplamıyor.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir
