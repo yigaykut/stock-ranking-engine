@@ -412,7 +412,8 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
                    tarih: pd.DatetimeIndex, dilim: int = 10,
                    maliyet_bp: float = 0.0, ufuk_gun: int = 1,
                    gun_bazinda: bool = True,
-                   nitelik: "dict | None" = None) -> dict:
+                   nitelik: "dict | None" = None,
+                   en_iyi: "tuple[int, ...]" = (5, 10, 20)) -> dict:
     """What the top slice actually returned, net of costs.
 
     This is the number that decides whether the model is worth anything.
@@ -506,9 +507,54 @@ def dilim_getirisi(p: np.ndarray, getiri: np.ndarray,
     except ValueError:
         pass
 
+    # Ust dilim iki bin hissenin iki yuzu demek. Gercek bir portfoyde on
+    # isim tutulur ve o, ust %0.5'tir -- dilim ortalamasinin soyledigi sey
+    # degil. Ince uclarda ortalama daha oynak ve birkac isim daha kolay
+    # tasiyor, o yuzden gun bazinda medyan ve kazanan gun orani da veriliyor.
+    tepe = {}
+    if gun_bazinda:
+        sira_ters = (pd.Series(-p).groupby(np.asarray(tarih)).rank(method="first")
+                     .to_numpy())
+        for k in en_iyi:
+            m = sira_ters <= k
+            if m.sum() < 50:
+                continue
+            g = (pd.DataFrame({"gun": tarih[m],
+                               "r": getiri[m] - maliyet_bp / 10000.0})
+                 .groupby("gun")["r"].mean())
+            if len(g) < 10:
+                continue
+            # t, sifira karsi DEGIL, o gunun kendi ortalamasina karsi.
+            #
+            # Ilk surum sifira karsi test ediyordu ve karistirilmis etiketle
+            # ilk-10 +%0.55 / t=2.49, ilk-20 t=3.04 veriyordu. Dogru sonuc:
+            # taban zaten +%0.4 ve dagilim saga carpik, yani gunde rastgele
+            # on isim secsen de pozitif ortalama ve buyuk bir t alirsin. O t
+            # "model iyi seciyor" demiyor, "taban pozitif" diyor.
+            #
+            # Gun bazinda farki almak hem tabani hem o gunun piyasasini
+            # aradan cikariyor; geriye SECIMIN kendisi kaliyor.
+            gunluk_taban = (pd.DataFrame({"gun": tarih, "r": getiri})
+                            .groupby("gun")["r"].mean())
+            fark = (g - gunluk_taban).dropna()
+            if len(fark) < 10:
+                continue
+            ktv, _, _ = newey_west_t(fark.to_numpy(),
+                                     lag=_ortusme(fark.index, ufuk_gun))
+            tepe[f"ilk{k}"] = {
+                "n": int(m.sum()), "gun": int(len(g)),
+                "getiri": round(float(g.mean()), 6),
+                "ortanca": round(float(g.median()), 6),
+                "taban_fark": round(float(fark.mean()), 6),
+                "fark_ortanca": round(float(fark.median()), 6),
+                "kazanan_gun": round(float((fark > 0).mean()), 3),
+                "t_nw": None if not np.isfinite(ktv) else round(float(ktv), 2),
+            }
+
     return {
         "ok": True,
         "n": int(ust.sum()),
+        "en_iyi": tepe,
         "gun": int(len(gunluk)),
         "getiri": round(float(net.mean()), 6),
         "brut": round(float(getiri[ust].mean()), 6),

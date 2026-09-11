@@ -195,6 +195,48 @@ check("too few days is refused",
       not mm.dilim_getirisi(tahmin[:500], getiri[:500],
                             pd.DatetimeIndex(["2025-01-01"] * 500))["ok"])
 
+# Gercek bir portfoyde on isim tutulur; ust dilim iki bin hissenin iki yuzu
+# demek ve bu ayni sayi degil. Ince uc ayri raporlaniyor, ve ilk surumu
+# disaridaki t degiskenini ezip ust dilimin t'sini sessizce degistirdi.
+d_ince = mm.dilim_getirisi(tahmin, getiri, gun, maliyet_bp=0.0,
+                           ufuk_gun=1)
+check("ince uc raporlaniyor", bool(d_ince.get("en_iyi")),
+      str(list((d_ince.get("en_iyi") or {}).keys())))
+# Bu kurgu gunde yirmi isim tutuyor, yani "ilk10" ust yarim demek ve ust
+# dilimden zayif olmasi dogru. Kontrol edilecek sey dilimle kiyas degil,
+# dar ucun genisinden guclu olmasi.
+ince = d_ince["en_iyi"]
+check("dar uc genis uctan guclu",
+      ince["ilk5"]["getiri"] > ince["ilk10"]["getiri"] > ince["ilk20"]["getiri"],
+      " > ".join(f"{k} {100 * v['getiri']:.3f}%" for k, v in ince.items()))
+check("kazanan gun orani da raporlaniyor",
+      0.0 <= ince["ilk10"]["kazanan_gun"] <= 1.0)
+
+# Ve asil kilit: t sifira karsi DEGIL, o gunun ortalamasina karsi.
+#
+# Ilk surum sifira karsi test ediyordu. Gercek panelde karistirilmis
+# etiketle ilk-10 t=2.49, ilk-20 t=3.04 veriyordu -- cunku taban pozitif ve
+# dagilim saga carpik, yani rastgele secim de "anlamli" cikiyordu.
+r6 = np.random.default_rng(77)
+n6 = 20000
+gun6 = pd.DatetimeIndex(np.repeat(pd.date_range("2024-01-01", periods=200), 100))
+# Getiri saga carpik ve ortalamasi acik ara pozitif; tahmin SAF GURULTU.
+# Gercek panele benzesin diye olcekli: ortalama +%0.4 civari, saga carpik.
+getiri6 = 0.05 * (r6.lognormal(0.0, 0.5, n6) - 1.05)
+rastgele = r6.normal(0, 1, n6)
+d6 = mm.dilim_getirisi(rastgele, getiri6, gun6, maliyet_bp=0.0, ufuk_gun=1)
+i6 = d6["en_iyi"]
+check("saga carpik pozitif tabanda ilk-10 pozitif GORUNUYOR",
+      i6["ilk10"]["getiri"] > 0, f"%{100 * i6['ilk10']['getiri']:.2f}")
+check("ama taban farki sifir civari",
+      abs(i6["ilk10"]["taban_fark"]) < 0.004,
+      f"%{100 * i6['ilk10']['taban_fark']:.3f}")
+check("ve t gurultuyu anlamli saymiyor",
+      all(abs(i6[k]["t_nw"] or 0) < 2.5 for k in i6),
+      str({k: i6[k]["t_nw"] for k in i6}))
+check("ust dilimin t degeri ezilmedi", d_ince["t_nw"] > 2,
+      str(d_ince["t_nw"]))
+
 print()
 print("=" * 72)
 print("6) OVERLAP IS ACCOUNTED FOR")

@@ -2881,6 +2881,28 @@ def cmd_meta(args: argparse.Namespace) -> int:
         print("    ag yapi degil egitim penceresi buluyordur; o zaman cevap")
         print("    daha cok parametre degil daha az.")
         print()
+    ince = [(r_["ufuk"], ((r_.get("dilim") or {}).get("10bp") or {}).get("en_iyi"))
+            for r_ in d["sonuclar"] if r_.get("ok")]
+    ince = [(u, v) for u, v in ince if v]
+    if ince:
+        print("  GERCEK BIR PORTFOY: GUNUN EN IYI N ISMI (10bp dusulmus)")
+        print(f"  {'UFUK':>5}{'SLOT':>7}{'GETIRI':>10}{'TABAN FARKI':>13}"
+              f"{'MEDYAN':>9}{'t':>8}{'KAZANAN':>9}{'GUN':>7}")
+        print("  " + "-" * 68)
+        for u, v in ince:
+            for ad, x in v.items():
+                tt = f"{x['t_nw']:+.2f}" if x.get("t_nw") is not None else "-"
+                print(f"  {u:>5}{ad.replace('ilk', ''):>7}"
+                      f"{100 * x['getiri']:>9.3f}%"
+                      f"{100 * x.get('taban_fark', 0):>12.3f}%"
+                      f"{100 * x.get('fark_ortanca', 0):>8.3f}%"
+                      f"{tt:>8}{100 * x['kazanan_gun']:>8.0f}%{x['gun']:>7,}")
+        print("    Ust dilim iki bin hissenin iki yuzu demek. On isim tutan")
+        print("    bir portfoy ust %0.5'tir ve ayni sayi degildir.")
+        print("    t ve KAZANAN, o gunun kendi ortalamasina gore olculuyor.")
+        print("    Sifira karsi olcmek yanlis: taban zaten pozitif ve dagilim")
+        print("    saga carpik, rastgele on isim de 'anlamli' cikardi.")
+        print()
     ua = [(r_["ufuk"], ((r_.get("dilim") or {}).get("10bp") or {}).get("ust_alt"))
           for r_ in d["sonuclar"] if r_.get("ok")]
     ua = [(u, v) for u, v in ua if v]
