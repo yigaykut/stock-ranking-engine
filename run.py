@@ -2091,10 +2091,24 @@ def _kisa_ufuklar(args: argparse.Namespace) -> tuple:
 def _kisa_bench(args: argparse.Namespace):
     """Karsilastirma endeksi. Yoksa acikca uyarir.
 
+    Kriptoda endeks BTC. SPY'i kripto kesitine kiyas almak "fazla getiri"
+    sutununu anlamsiz kilardi. Akran etiketi zaten gunun piyasa medyanindan
+    arindiriyor, yani `akranmed` bu secimden etkilenmiyor; etkilenen
+    `fazla_Ng` ve onun okunabilir olmasi gerekiyor.
+
     Endekssiz olcum, yukselen piyasada her kurulumu iyi gosterir; sessizce
     dusulmesi gereken bir seye degil, gorulmesi gereken bir eksige benziyor.
     """
     frekans = getattr(args, "frekans", "1d")
+    if getattr(args, "varlik", "hisse") == "kripto":
+        from src import kripto as kr
+
+        d = kr.oku("BTCUSDT", getattr(args, "kripto_baslangic", "2017-08-01"))
+        if d is not None and "Close" in d:
+            return d["Close"]
+        print("  UYARI: BTCUSDT barlari yok, kripto kiyasi olmadan "
+              "olculecek.", file=sys.stderr)
+        return None
     try:
         if frekans != "1d":
             # GUN ICI OLCUMDE ENDEKS DE GUN ICI OLMALI. Gunluk endeksi
@@ -2161,7 +2175,22 @@ def cmd_kisa(args: argparse.Namespace) -> int:
         print("=" * 74)
         print("KISA VADE META-ETIKET PANELI")
         print("=" * 74)
-        bundles = _kisa_bundles(args, tembel=(args.frekans == "1d"))
+        if args.varlik == "kripto":
+            from src import kripto as kr
+
+            bundles = kr.paketler(baslangic=args.kripto_baslangic)
+            # Kriptoda sektor yok, dolayisiyla akran grubu da yok. TEK GRUP
+            # kullaniliyor: etiket, o gun butun piyasanin medyanindan farki.
+            #
+            # Hacim kademesine gore grup kurmak daha ince olurdu ama grup
+            # atamasi paritenin TUM omrundeki hacme bakardi -- yani gruba
+            # gelecekten bilgiyle karar verilirdi. Hisse tarafinda grup
+            # atamasi zaten boyle ve o kusuru buraya tasimanin anlami yok.
+            gruplar = {tk: "kripto" for tk in bundles}
+            print(f"  {len(bundles):,} parite · tek akran grubu (piyasa "
+                  f"medyani)", flush=True)
+        else:
+            bundles = _kisa_bundles(args, tembel=(args.frekans == "1d"))
         if not bundles:
             return 1
         print(f"  {len(bundles)} hisse · frekans {args.frekans}", flush=True)
@@ -2171,16 +2200,17 @@ def cmd_kisa(args: argparse.Namespace) -> int:
             print(f"      {i} sembol tarandi ({islenen} kullanildi)"
                   f"{_bellek()}", flush=True)
 
-        from src import havuz as _hv
+        if args.varlik != "kripto":
+            from src import havuz as _hv
 
-        gruplar = _hv.grup_esleme()
-        if not gruplar:
-            print("  UYARI: akran gruplari yok, capraz kesitsel sutunlar "
-                  "uretilmeyecek. Once: python run.py havuz --tam",
-                  file=sys.stderr)
-        else:
-            print(f"  akran gruplari: {len(set(gruplar.values()))} grup, "
-                  f"{len(gruplar)} sembol", flush=True)
+            gruplar = _hv.grup_esleme()
+            if not gruplar:
+                print("  UYARI: akran gruplari yok, capraz kesitsel sutunlar "
+                      "uretilmeyecek. Once: python run.py havuz --tam",
+                      file=sys.stderr)
+            else:
+                print(f"  akran gruplari: {len(set(gruplar.values()))} grup, "
+                      f"{len(gruplar)} sembol", flush=True)
         ozet = kb.panel(bundles, bench, ufuklar=_kisa_ufuklar(args),
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                         frekans=args.frekans, gruplar=gruplar,
@@ -2564,6 +2594,64 @@ def cmd_gecmis(args: argparse.Namespace) -> int:
     print()
     print(f"  Panel: python run.py kisa panel --frekans 1d "
           f"--period {args.period} --ufuklar 21")
+    return 0
+
+
+def cmd_kripto(args: argparse.Namespace) -> int:
+    """Binance gunluk barlari — kapanmis pariteler dahil."""
+    from src import kripto as kr
+
+    print("=" * 78)
+    print(f"KRIPTO EVRENI — {args.baslangic} sonrasi")
+    print("=" * 78)
+
+    if args.kripto_action == "kapsam":
+        k = kr.kapsam(baslangic=args.baslangic)
+        if not k.get("ok"):
+            print("  Onbellekte bar yok.")
+            print(f"  Indirmek icin: python run.py kripto cek "
+                  f"--baslangic {args.baslangic}")
+            return 0
+        print(f"  {k['parite']:,} parite · {k['bar']:,} bar · "
+              f"ortalama {k['bar_ortalama']:,.0f} bar")
+        print(f"  {k['ilk']} .. {k['son']}")
+        print(f"  evren {k['evren']:,} paritenin "
+              f"%{100 * k['parite'] / max(k['evren'], 1):.0f}'i")
+        print()
+        print(f"  KAPANMIS PARITE: {k['olu']:,}")
+        if not k["olu"]:
+            print("  UYARI: sifir. Hayatta kalma yanliligi geri gelmis "
+                  "demektir ve", file=sys.stderr)
+            print("  bu evrenin hisse evreninden farki kalmaz.",
+                  file=sys.stderr)
+        else:
+            print("  Bu sayinin sifirdan buyuk olmasi bu evrenin butun "
+                  "anlami.")
+        return 0
+
+    s_ = kr.semboller()
+    aktif = sum(1 for v in s_.values() if v["aktif"])
+    print(f"  {len(s_):,} parite ({aktif:,} aktif, {len(s_) - aktif:,} "
+          f"kapanmis) · istekler arasi ~{args.bekleme:.2f}s")
+    print()
+
+    def ilerleme(i, n, yazildi, atlanan):
+        print(f"      {i:,}/{n:,} · yazildi {yazildi:,} · gecildi {atlanan:,}",
+              flush=True)
+
+    d = kr.cek(baslangic=args.baslangic, yenile=args.yenile,
+               bekle=args.bekleme, ilerleme=ilerleme)
+    print()
+    print(f"  istenen {d['istenen']:,} · onbellekte olan {d['atlandi']:,} · "
+          f"yazilan {d['yazildi']:,}")
+    print(f"  gecmisi kisa {d['kisa']:,} · hatali {d['hatali']:,}")
+    print(f"  bunlarin {d['olu_yazildi']:,} tanesi KAPANMIS parite")
+    if d.get("durduruldu"):
+        print(f"  DURDURULDU — {d['durduruldu']}")
+        print("  Tekrar calistirildiginda kaldigi yerden devam eder.")
+    print()
+    print("  Panel: python run.py kisa panel --varlik kripto "
+          "--ufuklar 1,3,7,14 --sadece-capraz")
     return 0
 
 
@@ -3235,6 +3323,13 @@ def main() -> int:
                       help="yalnizca ilk N sembol (deneme icin)")
     kv_p.add_argument("--benchmark", default="SPY",
                       help="kazanc 'endeksten iyi' diye olculur")
+    kv_p.add_argument("--varlik", default="hisse",
+                      choices=["hisse", "kripto"],
+                      help="hangi evren. kripto: Binance, kapanmis pariteler "
+                           "dahil, tek akran grubu")
+    kv_p.add_argument("--kripto-baslangic", default="2017-08-01",
+                      dest="kripto_baslangic",
+                      help="--varlik kripto ile: bar onbellegi anahtari")
     kv_p.add_argument("--sadece-capraz", action="store_true",
                       dest="sadece_capraz",
                       help="panel: yalnizca capraz kesit tablosunu kur, "
@@ -3296,6 +3391,18 @@ def main() -> int:
     gp.add_argument("--benchmark", default="SPY")
     gp.add_argument("--yenile", action="store_true",
                     help="onbellekte olani da yeniden indir")
+
+    kp = sub.add_parser("kripto", aliases=["crypto"],
+                        help="Binance gunluk barlari — kapanmis pariteler "
+                             "dahil (hayatta kalma yanliligi yok)")
+    kp.add_argument("kripto_action", nargs="?", default="kapsam",
+                    choices=["kapsam", "cek"],
+                    help="kapsam: onbellekte ne var - cek: indir")
+    kp.add_argument("--baslangic", default="2017-08-01",
+                    help="bu tarihten sonraki barlar. Onbellek anahtari "
+                         "budur; panel ayni deger ile okur.")
+    kp.add_argument("--bekleme", type=float, default=0.15)
+    kp.add_argument("--yenile", action="store_true")
 
     pz_p = sub.add_parser("piyasa", aliases=["market"],
                           help="piyasanin yonu tahmin edilebiliyor mu "
@@ -3442,6 +3549,8 @@ def main() -> int:
         return cmd_learn(args)
     if args.cmd == "meta":
         return cmd_meta(args)
+    if args.cmd in ("kripto", "crypto"):
+        return cmd_kripto(args)
     if args.cmd in ("piyasa", "market"):
         return cmd_piyasa(args)
     if args.cmd in ("olay", "events"):
