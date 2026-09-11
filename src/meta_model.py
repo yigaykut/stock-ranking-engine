@@ -58,7 +58,8 @@ DATA = Path(__file__).resolve().parents[1] / "data"
 MIN_SATIR = 2000
 
 # Egitimde kullanilmayacak sutunlar: kimlik ve etiketler.
-KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon", "grup")
+KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon", "grup",
+          "rejim")
 
 
 def cikti_yolu(frekans: str, dizi: bool = False,
@@ -284,6 +285,10 @@ def hazirla(df: pd.DataFrame, ufuk: int,
                     for a in ("dolar_hacim", "atr_pct", "g_ma200_uzaklik")
                     if a in alt.columns},
         "kurulum": alt["kurulum"].to_numpy(),
+        # Rejim bir OZELLIK degil, bir BOLME. Modele verilmiyor; olcumun
+        # rejim rejim okunabilmesi icin tasiniyor.
+        "rejim": (alt["rejim"].astype(str).to_numpy()
+                  if "rejim" in alt.columns else None),
         # Only the three the bucket calibration was built on. The peer group
         # is one-hot input to the model but it is not a bucket condition, and
         # handing it to the baseline lookup would silently change what the
@@ -808,7 +813,7 @@ def ufuk_ic(frekans: str = "1d", kaynak: str = "capraz",
 
 def portfoy(p: np.ndarray, getiri: np.ndarray, tarih, n: int = 10,
             maliyet_bp: float = 20.0, nitelik: "dict | None" = None,
-            ufuk_gun: int = 1) -> dict:
+            ufuk_gun: int = 1, rejim: "np.ndarray | None" = None) -> dict:
     """Gercek bir portfoy: her donem en iyi N al, en kotu N sat.
 
     `dilim_getirisi` dilim ortalamalari veriyor; burada sorulan sey baska ve
@@ -842,7 +847,7 @@ def portfoy(p: np.ndarray, getiri: np.ndarray, tarih, n: int = 10,
     if len(ortak) < 20:
         return {"ok": False, "reason": f"{len(ortak)} donem"}
     u_g, k_g = u_g.reindex(ortak), k_g.reindex(ortak)
-    m = maliyet_bp / 10000.0
+    m_ = maliyet_bp / 10000.0
 
     def ozet(seri, ad):
         v = seri.to_numpy()
@@ -862,10 +867,29 @@ def portfoy(p: np.ndarray, getiri: np.ndarray, tarih, n: int = 10,
 
     out = {
         "ok": True, "n": n, "maliyet_bp": maliyet_bp,
-        "uzun": ozet(u_g - m, "uzun"),
-        "kisa": ozet(-k_g - m, "kisa (ters isaretli)"),
-        "uzun_kisa": ozet((u_g - k_g) - 2 * m, "uzun-kisa"),
+        "uzun": ozet(u_g - m_, "uzun"),
+        "kisa": ozet(-k_g - m_, "kisa (ters isaretli)"),
+        "uzun_kisa": ozet((u_g - k_g) - 2 * m_, "uzun-kisa"),
     }
+    # Rejim rejim ayni hesap.
+    #
+    # Uce bolmek uc ayri test demek ve birinde iyi sonuc bulmak sansla da
+    # olur; bu yuzden her kovanin donem sayisi da veriliyor ve null kontrolu
+    # ayri kovalarda ayri bakilmali.
+    if rejim is not None:
+        rj = pd.Series(rejim)
+        gun_rejim = rj.groupby(gun).agg(lambda x: x.iloc[0])
+        for ad in ("boga", "ayi", "karisik"):
+            m = gun_rejim.reindex(ortak).to_numpy() == ad
+            if m.sum() < 20:
+                continue
+            fark = (u_g[m] - k_g[m]) - 2 * m_
+            out.setdefault("rejim", {})[ad] = {
+                **ozet(fark, f"uzun-kisa / {ad}"),
+                "uzun": round(float((u_g[m] - m_).mean()), 5),
+                "kisa": round(float((-k_g[m] - m_).mean()), 5),
+            }
+
     # Her bacagin ortanca dolar hacmi: short edilebilirligin en kaba ama en
     # dogrudan gostergesi.
     for ad, v in (nitelik or {}).items():
@@ -1278,6 +1302,8 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     fark, t, n_gun = gunluk_fark(P, B, Y, T, ufuk_gun=ufuk_gun)
     N = {a: np.concatenate([v[i] for i in tum_i])
          for a, v in (veri.get("nitelik") or {}).items()}
+    RJ = (np.concatenate([veri["rejim"][i] for i in tum_i])
+          if veri.get("rejim") is not None else None)
     dilim = {f"{int(c)}bp": dilim_getirisi(P, R, T, maliyet_bp=c,
                                            ufuk_gun=ufuk_gun,
                                            gun_bazinda=gunluk_dilim,
@@ -1291,7 +1317,7 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
     for n_slot in (5, 10, 20):
         for c in maliyetler:
             pr = portfoy(P, R, T, n=n_slot, maliyet_bp=float(c),
-                         nitelik=N, ufuk_gun=ufuk_gun)
+                         nitelik=N, ufuk_gun=ufuk_gun, rejim=RJ)
             if pr.get("ok"):
                 portfoyler[f"ilk{n_slot}_{int(c)}bp"] = pr
     C = np.concatenate(tum_c) if tum_c else np.full(len(Y), np.nan)
