@@ -2215,7 +2215,8 @@ def cmd_kisa(args: argparse.Namespace) -> int:
                         min_bar=kv.MIN_BAR, ilerleme=ilerleme,
                         frekans=args.frekans, gruplar=gruplar,
                         capraz_adim=args.capraz_adim,
-                        sadece_capraz=args.sadece_capraz)
+                        sadece_capraz=args.sadece_capraz,
+                        varlik=args.varlik)
         if not ozet.get("ok"):
             print(f"HATA: {ozet.get('reason')}", file=sys.stderr)
             return 1
@@ -2776,6 +2777,7 @@ def cmd_olay(args: argparse.Namespace) -> int:
 
         hedef = (kb.capraz_yolu(args.frekans) if args.kaynak == "capraz"
                  else kb.panel_yolu(args.frekans))
+        # Olaylar SEC bildirimleri, yani yalnizca hisse tarafinda anlamli.
         print(f"  hedef: {hedef.name}")
         r = ol.panele_ekle(hedef, period=args.period,
                            baslangic=args.baslangic)
@@ -2920,7 +2922,8 @@ def cmd_meta(args: argparse.Namespace) -> int:
     if args.sadece_ic:
         r = mm.ufuk_ic(args.frekans, kaynak=args.kaynak,
                        ufuklar=_kisa_ufuklar(args) or (3, 5, 10, 21),
-                       etiket=args.etiket, min_hacim=args.min_hacim)
+                       etiket=args.etiket, min_hacim=args.min_hacim,
+                       varlik=args.varlik)
         if not r.get("ok"):
             print(f"HATA: {r.get('reason')}", file=sys.stderr)
             return 1
@@ -2953,6 +2956,7 @@ def cmd_meta(args: argparse.Namespace) -> int:
                     tohum_sayisi=args.tohum_sayisi, siralama=args.siralama,
                     gunluk_dilim=not args.havuz_dilim,
                     min_hacim=args.min_hacim, kaynak=args.kaynak,
+                    varlik=args.varlik,
                     disla=tuple(x.strip() for x in str(args.disla).split(",")
                                 if x.strip()))
     if not d.get("ok"):
@@ -3481,6 +3485,11 @@ def main() -> int:
                           "dolar_hacim,amihud: kenar likidite ekseninden mi "
                           "geliyor, yoksa geriye bir sey kaliyor mu. Egilim "
                           "tanisi o sutunlari yine de raporlar.")
+    mp2.add_argument("--varlik", default="hisse",
+                     choices=["hisse", "kripto"],
+                     help="hangi evren. Panel ve sonuc dosyalari varlik "
+                          "basina ayri; ilk kripto kosusu hisse panelinin "
+                          "uzerine yazdigi icin bu ayrim var.")
     mp2.add_argument("--kaynak", default="sinyal",
                      choices=["sinyal", "capraz"],
                      help="sinyal: yalnizca kurulum ateslenen barlar - "

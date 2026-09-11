@@ -222,13 +222,22 @@ def _hafiflet(df: pd.DataFrame) -> pd.DataFrame:
     return df
 
 
-def capraz_yolu(frekans: str) -> Path:
-    return DATA / f"kisa_vade_capraz_{frekans}.csv"
+def capraz_yolu(frekans: str, varlik: str = "hisse") -> Path:
+    """Kesit tablosunun yolu.
+
+    VARLIK BASINA AYRI DOSYA. Bu dersi kod tabani zaten tasiyor -- frekans
+    icin ayni sey yazili -- ama varlik boyutunda tekrar edildi: kripto paneli
+    ilk kosusunda hisse panelinin uzerine yazdi ve on bes dakikalik bir
+    derleme gitti. Iki olcum tek dosyaya yazilirsa ikincisi birincisini yok
+    eder ve bunu hicbir sey soylemez.
+    """
+    return DATA / f"kisa_vade_capraz{_varlik_eki(varlik)}_{frekans}.csv"
 
 
 def capraz_yaz(uzun: pd.DataFrame, tk_kod: dict, ufuklar,
                frekans: str = "1d", adim: int = 5,
-               yol: Path | None = None, ekle: bool = False) -> dict:
+               yol: Path | None = None, ekle: bool = False,
+               varlik: str = "hisse") -> dict:
     """The whole cross-section as its own training table.
 
     The panel next to this one holds only the bars where one of the twelve
@@ -291,7 +300,7 @@ def capraz_yaz(uzun: pd.DataFrame, tk_kod: dict, ufuklar,
                                             "gerek")
                                 if c in tablo.columns])
 
-    p = yol or capraz_yolu(frekans)
+    p = yol or capraz_yolu(frekans, varlik)
     p.parent.mkdir(parents=True, exist_ok=True)
     tablo.to_csv(p, index=False, float_format="%.6g",
                  mode="a" if ekle else "w", header=not (ekle and p.exists()))
@@ -767,8 +776,18 @@ def _kova_adi(k: dict) -> str:
 PANEL = DATA / "kisa_vade_panel.csv"
 
 
-def panel_yolu(frekans: str) -> Path:
-    return DATA / f"kisa_vade_panel_{frekans}.csv"
+def _varlik_eki(varlik: str) -> str:
+    """Dosya adindaki varlik eki.
+
+    Hisse tarafi eksiz kaliyor: mevcut dosyalar, panolar ve arsivler o adla
+    duruyor ve bir ad degisikligi hepsini sessizce "veri yok" durumuna
+    dusururdu.
+    """
+    return "" if varlik in ("", "hisse", None) else f"_{varlik}"
+
+
+def panel_yolu(frekans: str, varlik: str = "hisse") -> Path:
+    return DATA / f"kisa_vade_panel{_varlik_eki(varlik)}_{frekans}.csv"
 
 
 def _dok(parcalar: list, yol: Path, sutunlar: list | None) -> list:
@@ -810,7 +829,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
           yol: Path | None = None,
           ilerleme: "callable | None" = None,
           frekans: str = "1d", gruplar: dict | None = None,
-          capraz_adim: int = 5, sadece_capraz: bool = False) -> dict:
+          capraz_adim: int = 5, sadece_capraz: bool = False,
+          varlik: str = "hisse") -> dict:
     """Kurulum basina SATIR SATIR ozellik + sonuc tablosu.
 
     NEDEN AYRI BIR CIKTI
@@ -860,12 +880,12 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         izgara = _gunluk_indeks(bench.index)[::int(capraz_adim)].to_numpy()
     parcalar: list[pd.DataFrame] = []
     # Where the setup rows go while the cross-section is still being built.
-    gecici = (yol or panel_yolu(frekans)).with_suffix(".ham.csv")
+    gecici = (yol or panel_yolu(frekans, varlik)).with_suffix(".ham.csv")
     gecici.parent.mkdir(parents=True, exist_ok=True)
     gecici.unlink(missing_ok=True)
     akis_sutun: list | None = None
     # And the same for the cross-section, which is the larger of the two.
-    cx_gecici = (yol or panel_yolu(frekans)).with_suffix(".cx.csv")
+    cx_gecici = (yol or panel_yolu(frekans, varlik)).with_suffix(".cx.csv")
     cx_gecici.unlink(missing_ok=True)
     cx_sutun: list | None = None
     # Every bar of every stock, not just the signal bars -- a peer rank has to
@@ -1038,6 +1058,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
                 # is the part that matters for a cross section; the ten
                 # boundaries are not worth carrying a global date grid for.
                 capraz_yaz(blok, tk_kod, ufuklar, frekans=frekans,
+                           varlik=varlik,
                            adim=capraz_adim, ekle=not ilk_cx)
                 ilk_cx = False
             sut = (["tk", "zaman"]
@@ -1055,7 +1076,8 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
             "bar": bar_say,
             "sutun": [c for c in uzun.columns if c.startswith("x_")],
             "etiket": [c for c in uzun.columns if c.startswith("akran")],
-            "tablo": ({"ok": True, "yol": str(capraz_yolu(frekans))}
+            "tablo": ({"ok": True,
+                       "yol": str(capraz_yolu(frekans, varlik))}
                       if capraz_adim else None),
         }
     elif capraz_parcalar:
@@ -1068,6 +1090,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
         # the rows were already thinned in the loop there is nothing left to
         # sample, so the writer is told to keep what it is given.
         capraz_tablo = (capraz_yaz(uzun, tk_kod, ufuklar, frekans=frekans,
+                                   varlik=varlik,
                                    adim=1 if izgara is not None else capraz_adim)
                         if capraz_adim else None)
         tut = (["tk", "zaman"]
@@ -1110,7 +1133,7 @@ def panel(bundles: dict, bench_close: "pd.Series | None" = None,
     # whole in memory, which is the only reason ten years of it fits: the
     # setup rows, the cross-section and the join were three gigabytes between
     # them and the build was killed halfway through.
-    p = yol or panel_yolu(frekans)
+    p = yol or panel_yolu(frekans, varlik)
     p.parent.mkdir(parents=True, exist_ok=True)
     p.unlink(missing_ok=True)
     satir = 0

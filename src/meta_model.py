@@ -63,20 +63,23 @@ KIMLIK = ("ticker", "tarih", "zaman", "frekans", "kurulum", "yon", "grup")
 
 def cikti_yolu(frekans: str, dizi: bool = False,
                etiket: str = "kazanc", karistir: int = 0,
-               kaynak: str = "sinyal") -> Path:
+               kaynak: str = "sinyal", varlik: str = "hisse") -> Path:
     ek = "_dizi" if dizi else ""
     et = "" if etiket == "kazanc" else f"_{etiket}"
     ka = "_karisik" if karistir else ""
     kk = "" if kaynak == "sinyal" else f"_{kaynak}"
-    return DATA / f"meta_model_{frekans}{ek}{et}{kk}{ka}.json"
+    # Varlik da ada giriyor: kripto kosusu ilk denemesinde hisse panelinin
+    # uzerine yazdi ve ayni sey sonuc dosyalarinda da olurdu.
+    vk = "" if varlik in ("", "hisse", None) else f"_{varlik}"
+    return DATA / f"meta_model_{frekans}{vk}{ek}{et}{kk}{ka}.json"
 
 
 # =============================================================================
 #  Veri
 # =============================================================================
 def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
-                min_hacim: float = 0.0,
-                etiket: str | None = None) -> pd.DataFrame | None:
+                min_hacim: float = 0.0, etiket: str | None = None,
+                varlik: str = "hisse") -> pd.DataFrame | None:
     """Signal rows, or the whole cross-section.
 
     "sinyal" is the table of bars where one of the twelve detectors fired.
@@ -86,8 +89,8 @@ def panel_yukle(frekans: str = "1d", kaynak: str = "sinyal",
     """
     from . import kalibrasyon as kb
 
-    p = (kb.capraz_yolu(frekans) if kaynak == "capraz"
-         else kb.panel_yolu(frekans))
+    p = (kb.capraz_yolu(frekans, varlik) if kaynak == "capraz"
+         else kb.panel_yolu(frekans, varlik))
     if not p.exists():
         return None
     # Features come in as float32, labels and returns as float64.
@@ -741,7 +744,7 @@ def bilesik(X_egit: np.ndarray, getiri_egit: np.ndarray, gun_egit,
 def ufuk_ic(frekans: str = "1d", kaynak: str = "capraz",
             ufuklar: "tuple[int, ...]" = (3, 5, 10, 21),
             etiket: str = "akranmed", min_hacim: float = 0.0,
-            en_fazla: int = 24) -> dict:
+            en_fazla: int = 24, varlik: str = "hisse") -> dict:
     """Ayni ozellikler, farkli ufuklar — ag egitmeden.
 
     Tam bir kosu dort katman, bes tohum ve seksen model demek; ufku secmek
@@ -758,7 +761,8 @@ def ufuk_ic(frekans: str = "1d", kaynak: str = "capraz",
     Tabloyu okurken: bu olcum katman ayrimi yapmaz, tum span'i okur. Veriyi
     tarif eder, tahmin etmez.
     """
-    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim)
+    df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim,
+                     varlik=varlik)
     if df is None or df.empty:
         return {"ok": False, "reason": "panel yok"}
     oz = [c for c in _ozellik_sutunlari(df)
@@ -1275,7 +1279,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
              karistir: int = 0, tohum_sayisi: int = 1,
              siralama: bool = False, gunluk_dilim: bool = True,
              min_hacim: float = 0.0, kaynak: str = "sinyal",
-             disla: "tuple[str, ...]" = ()) -> dict:
+             disla: "tuple[str, ...]" = (), varlik: str = "hisse") -> dict:
     """Panelden meta-modeli egitir ve kova taban cizgisine karsi olcer.
 
     dizi=True feeds the bars leading up to each signal as well; see src/dizi.py.
@@ -1289,7 +1293,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
     tek_etiket = (f"{etiket}_{ufuklar[0]}g"
                   if ufuklar and len(ufuklar) == 1 else None)
     df = panel_yukle(frekans, kaynak=kaynak, min_hacim=min_hacim,
-                     etiket=tek_etiket)
+                     etiket=tek_etiket, varlik=varlik)
     if df is None or df.empty:
         return {"ok": False,
                 "reason": f"panel yok — once: python run.py kisa panel "
@@ -1309,9 +1313,9 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         # panel_yukle already dropped the rows below the floor while reading;
         # this only records what the universe became. "once" is read back off
         # the file so the summary still says what it was cut from.
-        once = sum(1 for _ in open(kb.capraz_yolu(frekans)
+        once = sum(1 for _ in open(kb.capraz_yolu(frekans, varlik)
                                    if kaynak == "capraz"
-                                   else kb.panel_yolu(frekans),
+                                   else kb.panel_yolu(frekans, varlik),
                                    encoding="utf-8")) - 1
         evren = {"min_hacim": float(min_hacim), "once": once, "sonra": len(df),
                  "hisse": int(df["ticker"].nunique()) if len(df) else 0}
@@ -1418,6 +1422,7 @@ def calistir(frekans: str = "1d", ufuklar: "tuple[int, ...] | None" = None,
         "generated_at": datetime.now(timezone.utc).isoformat(timespec="seconds"),
         "frekans": frekans,
         "kaynak": kaynak,
+        "varlik": varlik,
         "disla": list(disla),
         "ok": any(r.get("ok") for r in sonuc),
         "panel_satir": panel_satir,
@@ -1489,7 +1494,8 @@ def kaydet(payload: dict, path: Path | None = None) -> Path:
                            bool(payload.get("dizi")),
                            payload.get("etiket", "kazanc"),
                            int(payload.get("karistir", 0)),
-                           payload.get("kaynak", "sinyal"))
+                           payload.get("kaynak", "sinyal"),
+                           payload.get("varlik", "hisse"))
     p.parent.mkdir(parents=True, exist_ok=True)
     p.write_text(json.dumps(payload, ensure_ascii=False, indent=1),
                  encoding="utf-8")
