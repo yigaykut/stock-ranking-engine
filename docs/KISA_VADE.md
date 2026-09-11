@@ -1538,6 +1538,70 @@ ekseni, ve o eksen hayatta kalma yanlılığından ayrılamıyor.
 
 ---
 
+## Bildirimin tonu (11.09.2026)
+
+8-K ölçümünde geriye tek boşluk kalmıştı: madde kodu olayın **türünü**
+söylüyor, **tonunu** söylemiyor. "Yönetici ayrıldı" ile "yönetici görevden
+alındı" aynı satır.
+
+### Metin nerede
+
+8-K'nın birincil belgesi çoğunlukla XBRL etiketinden ibaret — AAPL'ın
+bilanço bildiriminde 4.200 karakter ve tek cümle anlatı yok. Asıl metin
+**EX-99.1** ekinde (aynı bildirimde 10.400 karakter). Tam gönderi dosyası
+tek istekte hepsini veriyor, içinden EX-99 bloğu ayıklanıyor. Birincil
+belgeye **düşülmüyor**: oradan bir ton hesaplansaydı sayı üretilirdi ama
+ölçülen şey metin değil etiket sayısı olurdu.
+
+### Sözlük hakkında
+
+Elle derlenmiş ~200 kelimelik finans sözlüğü. Akademik standart
+(Loughran-McDonald) ~2.700 kelime ve bu onun yerine geçmez; amaç "ton
+ölçülebilir bir şey taşıyor mu" sorusuna ucuz ön cevap. İki bilinen
+zayıflık baştan yazıldı: olumsuzlama okunmuyor ("no material weakness" =
+"material weakness"), ve bilanço bültenlerinde puanın büyük kısmını
+"increase/decrease" belirliyor — yani aslında "ton" değil "çeyrek iyi mi"
+ölçülüyor.
+
+### Sonuç: taşımıyor
+
+66 hisse (en likitler), 2.482 bilanço bülteni, 2016-2026. İleri getiri
+endeksten arındırılmış, t gün bazında Newey-West:
+
+| Ufuk | ton rho | ton t | olumsuz rho | olumsuz t |
+|---:|---:|---:|---:|---:|
+| 1 | −0.020 | −0.88 | +0.030 | +1.11 |
+| 3 | −0.030 | −1.48 | +0.041 | **+2.47** |
+| 5 | +0.007 | −0.68 | +0.011 | +1.92 |
+| 10 | +0.006 | −0.26 | +0.001 | +0.87 |
+| 21 | −0.004 | −0.43 | −0.014 | +0.18 |
+
+21 günlük beşlikler sırasız ve en **düşük** ton kovası en yüksek getiriyi
+veriyor (+%2.22, diğerleri −0.22 / +0.53 / −0.33 / +0.29).
+
+Tek dikkat çeken 3 günde `olumsuz_oran`, t=+2.47. Üç sebeple kanıt
+sayılmıyor:
+
+- **İşaret ters.** Daha çok olumsuz kelime → daha yüksek getiri. Bu bir
+  tepki-sonrası dönüş hikâyesi, yani modelde zaten olan `x_roc5`'in aynısı.
+- **On test yapıldı** (5 ufuk × 2 ölçü). Şans, |t|>2 olan yarım tane
+  bekletir; bir tane çıkması fazlalık değil.
+- Ufuk 1 ve 5'te aynı ölçü t=1.11 ve 1.92; 3 günde tepe yapıp sönüyor.
+
+### Ne öğrendik
+
+Haber tarafı artık iki koldan da ölçüldü: **tür** (8-K madde kodları) ve
+**ton** (basın bülteni metni). İlki gerçek ama modelin kullanamayacağı kadar
+küçük bir ilişki veriyor; ikincisi ölçülebilir hiçbir şey vermiyor.
+
+Sınır: pilot yalnızca 2.02 (bilanço) bildirimlerinde ve en likit 66 hissede.
+Ton küçük şirketlerde daha çok işe yarayabilir — analist takibi az, haber
+daha çok bilgi taşır — ama küçük şirket bandı tam da hayatta kalma
+yanlılığının en ağır olduğu yer, yani orada ölçülen bir kenar bu veriyle
+yorumlanamaz.
+
+---
+
 ## Sınırlar — dürüst liste
 
 - **Kalibrasyon geçmişi önbellekle sınırlı**: 2 yıllık günlük bar. Uzun bir

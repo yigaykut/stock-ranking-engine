@@ -149,6 +149,7 @@ def _kayitlari_ac(blok: dict) -> list[dict]:
     kabul = blok.get("acceptanceDateTime") or [""] * n
     tarih = blok.get("filingDate") or [""] * n
     madde = blok.get("items") or [""] * n
+    erisim = blok.get("accessionNumber") or [""] * n
     out = []
     for i in range(n):
         if form[i] != "8-K":
@@ -159,6 +160,9 @@ def _kayitlari_ac(blok: dict) -> list[dict]:
             "kabul": kabul[i],
             "etkin_gun": _etkin_gun(kabul[i] or tarih[i]),
             "maddeler": madde[i] or "",
+            # Belge metnini cekebilmek icin gerekiyor; 8-K'nin kendisi
+            # cogunlukla XBRL etiketi, anlati EX-99.1'de.
+            "erisim": erisim[i] or "",
         })
     return out
 
