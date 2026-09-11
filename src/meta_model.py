@@ -1284,12 +1284,16 @@ def walk_forward(veri: dict, ufuk: int, kalib: dict | None, taban: float,
                                            nitelik=N)
              for c in maliyetler}
     # Gercek portfoy: al-sat kurali, donem donem.
+    # Her maliyet seviyesi icin ayri: uzun-kisa her donem IKI gidis-donus
+    # oduyor ve 20bp ile 60bp arasindaki fark haftalik %0.8, yani aylik
+    # yaklasik dort puan. Tek bir maliyetle rapor etmek o farki gizler.
     portfoyler = {}
     for n_slot in (5, 10, 20):
-        pr = portfoy(P, R, T, n=n_slot, maliyet_bp=float(min(maliyetler) or 20),
-                     nitelik=N, ufuk_gun=ufuk_gun)
-        if pr.get("ok"):
-            portfoyler[f"ilk{n_slot}"] = pr
+        for c in maliyetler:
+            pr = portfoy(P, R, T, n=n_slot, maliyet_bp=float(c),
+                         nitelik=N, ufuk_gun=ufuk_gun)
+            if pr.get("ok"):
+                portfoyler[f"ilk{n_slot}_{int(c)}bp"] = pr
     C = np.concatenate(tum_c) if tum_c else np.full(len(Y), np.nan)
     bilesik_dilim = None
     if np.isfinite(C).any():
